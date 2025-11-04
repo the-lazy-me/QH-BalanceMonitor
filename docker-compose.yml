@@ -1,0 +1,27 @@
+version: '3.8'
+
+services:
+  backend:
+    build: ./backend
+    container_name: balance-monitor-backend
+    # 后端不暴露到公网，仅容器内网络访问
+    expose:
+      - "8080"
+    volumes:
+      - ./data:/app/data
+    environment:
+      - SERVER_PORT=:8080
+      - DATABASE_PATH=/app/data/balance_monitor.db
+    restart: unless-stopped
+
+  frontend:
+    build: ./frontend
+    container_name: balance-monitor-frontend
+    ports:
+      - "9597:3000"  # 映射到公网端口 9597
+    environment:
+      - BACKEND_URL=http://backend:8080  # 容器内部通过服务名访问后端
+    depends_on:
+      - backend
+    restart: unless-stopped
+

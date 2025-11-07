@@ -79,10 +79,11 @@ export const deleteProvider = (id: number) => api.delete(`/providers/${id}`)
 
 // 余额相关
 export const getCurrentBalance = () => api.get('/balance')
-export const getBalanceHistory = (providerId?: number, limit?: number) => {
+export const getBalanceHistory = (providerId?: number, limit?: number, days?: number) => {
   const params: any = {}
   if (providerId) params.provider_id = providerId
   if (limit) params.limit = limit
+  if (days) params.days = days
   return api.get('/balance/history', { params })
 }
 export const manualCheckBalance = () => api.post('/balance/check')

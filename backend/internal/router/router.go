@@ -313,6 +313,7 @@ func getBalanceHistory(db *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		providerID := c.Query("provider_id")
 		limit := c.DefaultQuery("limit", "100")
+		days := c.Query("days")
 
 		query := `
 			SELECT bh.id, bh.provider_id, p.name, bh.quota, bh.balance, bh.checked_at
@@ -322,14 +323,42 @@ func getBalanceHistory(db *sql.DB) gin.HandlerFunc {
 
 		var rows *sql.Rows
 		var err error
+		var conditions []string
+		var args []interface{}
 
+		// 添加供应商筛选条件
 		if providerID != "" {
-			query += " WHERE bh.provider_id = ? ORDER BY bh.checked_at DESC LIMIT ?"
-			rows, err = db.Query(query, providerID, limit)
-		} else {
-			query += " ORDER BY bh.checked_at DESC LIMIT ?"
-			rows, err = db.Query(query, limit)
+			conditions = append(conditions, "bh.provider_id = ?")
+			args = append(args, providerID)
 		}
+
+		// 添加天数筛选条件
+		if days != "" {
+			conditions = append(conditions, "bh.checked_at >= datetime('now', '-' || ? || ' days')")
+			args = append(args, days)
+		}
+
+		// 组合WHERE条件
+		if len(conditions) > 0 {
+			query += " WHERE "
+			for i, condition := range conditions {
+				if i > 0 {
+					query += " AND "
+				}
+				query += condition
+			}
+		}
+
+		// 添加排序和限制
+		query += " ORDER BY bh.checked_at DESC"
+		
+		// 只有在没有指定天数时才应用limit限制
+		if days == "" {
+			query += " LIMIT ?"
+			args = append(args, limit)
+		}
+
+		rows, err = db.Query(query, args...)
 
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})

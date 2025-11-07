@@ -125,6 +125,9 @@ export function BalanceDashboard() {
   const [loading, setLoading] = useState(false)
   const [dashboardCards, setDashboardCards] = useState<DashboardCard[]>([])
   const [dialogOpen, setDialogOpen] = useState(false)
+  const [timeRange, setTimeRange] = useState<number | undefined>(7) // 默认7天
+  const [customDays, setCustomDays] = useState<string>('') // 自定义天数
+  const [isCustom, setIsCustom] = useState(false) // 是否使用自定义
   const { toast } = useToast()
 
   const sensors = useSensors(
@@ -138,7 +141,7 @@ export function BalanceDashboard() {
     try {
       const [balanceRes, historyRes] = await Promise.all([
         getCurrentBalance(),
-        getBalanceHistory(undefined, 50)
+        getBalanceHistory(undefined, undefined, timeRange)
       ])
       setBalances(balanceRes.data || [])
       setHistory(historyRes.data || [])
@@ -172,7 +175,7 @@ export function BalanceDashboard() {
 
   useEffect(() => {
     loadData()
-  }, [])
+  }, [timeRange])
 
   const handleManualCheck = async () => {
     setLoading(true)
@@ -232,10 +235,9 @@ export function BalanceDashboard() {
     (balance) => !(dashboardCards || []).some((card) => card.provider_id === balance.provider_id)
   )
 
-  // 准备图表数据
+  // 准备图表数据 - 显示所有筛选后的数据
   const chartData = (history || [])
     .sort((a, b) => new Date(a.checked_at).getTime() - new Date(b.checked_at).getTime())
-    .slice(-20)
     .map(item => ({
       time: new Date(item.checked_at).toLocaleString('zh-CN', {
         month: '2-digit',
@@ -259,6 +261,47 @@ export function BalanceDashboard() {
 
   // 获取所有供应商名称用于图表线条
   const providerNames = Array.from(new Set((history || []).map(h => h.provider_name)))
+  
+  // 动态计算显示的天数和数据点数
+  const getTimeRangeText = () => {
+    if (isCustom && customDays) {
+      return `最近 ${customDays} 天`
+    }
+    if (!timeRange) return '全部'
+    return `最近 ${timeRange} 天`
+  }
+  
+  const dataPointsCount = mergedChartData.length
+
+  // 处理时间范围变化
+  const handleTimeRangeChange = (value: string) => {
+    if (value === 'custom') {
+      setIsCustom(true)
+      setTimeRange(undefined)
+    } else if (value === 'all') {
+      setIsCustom(false)
+      setTimeRange(undefined)
+      setCustomDays('')
+    } else {
+      setIsCustom(false)
+      setTimeRange(Number(value))
+      setCustomDays('')
+    }
+  }
+
+  // 处理自定义天数应用
+  const handleApplyCustomDays = () => {
+    const days = parseInt(customDays)
+    if (isNaN(days) || days <= 0) {
+      toast({
+        variant: 'destructive',
+        title: '输入错误',
+        description: '请输入有效的天数（大于0的整数）',
+      })
+      return
+    }
+    setTimeRange(days)
+  }
 
   return (
     <div className="space-y-6">
@@ -316,8 +359,49 @@ export function BalanceDashboard() {
 
       <Card>
         <CardHeader>
-          <CardTitle>余额趋势</CardTitle>
-          <CardDescription>最近 20 次检查的余额变化</CardDescription>
+          <div className="flex flex-col gap-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <CardTitle>余额趋势</CardTitle>
+                <CardDescription>
+                  {getTimeRangeText()}的余额变化 ({dataPointsCount} 个数据点)
+                </CardDescription>
+              </div>
+              <div className="flex items-center gap-2">
+                <label className="text-sm font-medium text-muted-foreground">时间范围:</label>
+                <select
+                  value={isCustom ? 'custom' : (timeRange || 'all')}
+                  onChange={(e) => handleTimeRangeChange(e.target.value)}
+                  className="px-3 py-1.5 border rounded-md bg-background text-sm"
+                >
+                  <option value={1}>最近 1 天</option>
+                  <option value={3}>最近 3 天</option>
+                  <option value={7}>最近 7 天</option>
+                  <option value={15}>最近 15 天</option>
+                  <option value={30}>最近 30 天</option>
+                  <option value={90}>最近 90 天</option>
+                  <option value="all">全部</option>
+                  <option value="custom">自定义天数</option>
+                </select>
+              </div>
+            </div>
+            {isCustom && (
+              <div className="flex items-center gap-2 justify-end">
+                <label className="text-sm font-medium text-muted-foreground">自定义天数:</label>
+                <input
+                  type="number"
+                  min="1"
+                  value={customDays}
+                  onChange={(e) => setCustomDays(e.target.value)}
+                  placeholder="输入天数"
+                  className="px-3 py-1.5 border rounded-md bg-background text-sm w-32"
+                />
+                <Button size="sm" onClick={handleApplyCustomDays}>
+                  应用
+                </Button>
+              </div>
+            )}
+          </div>
         </CardHeader>
         <CardContent>
           {mergedChartData.length > 0 ? (

@@ -128,6 +128,7 @@ export function BalanceDashboard() {
   const [timeRange, setTimeRange] = useState<number | undefined>(7) // 默认7天
   const [customDays, setCustomDays] = useState<string>('') // 自定义天数
   const [isCustom, setIsCustom] = useState(false) // 是否使用自定义
+  const [selectedProviders, setSelectedProviders] = useState<number[]>([]) // 选中的供应商
   const { toast } = useToast()
 
   const sensors = useSensors(
@@ -236,7 +237,11 @@ export function BalanceDashboard() {
   )
 
   // 准备图表数据 - 显示所有筛选后的数据
-  const chartData = (history || [])
+  const filteredHistory = selectedProviders.length > 0
+    ? (history || []).filter(h => selectedProviders.includes(h.provider_id))
+    : (history || [])
+
+  const chartData = filteredHistory
     .sort((a, b) => new Date(a.checked_at).getTime() - new Date(b.checked_at).getTime())
     .map(item => ({
       time: new Date(item.checked_at).toLocaleString('zh-CN', {
@@ -259,8 +264,13 @@ export function BalanceDashboard() {
     }
   })
 
-  // 获取所有供应商名称用于图表线条
-  const providerNames = Array.from(new Set((history || []).map(h => h.provider_name)))
+  // 获取所有供应商名称用于图表线条（根据筛选条件）
+  const providerNames = Array.from(new Set(filteredHistory.map(h => h.provider_name)))
+  
+  // 获取所有唯一的供应商列表用于筛选器
+  const allProviders = Array.from(
+    new Map((history || []).map(h => [h.provider_id, { id: h.provider_id, name: h.provider_name }])).values()
+  ).sort((a, b) => a.name.localeCompare(b.name))
   
   // 动态计算显示的天数和数据点数
   const getTimeRangeText = () => {
@@ -301,6 +311,26 @@ export function BalanceDashboard() {
       return
     }
     setTimeRange(days)
+  }
+
+  // 处理供应商选择
+  const handleProviderToggle = (providerId: number) => {
+    setSelectedProviders(prev => {
+      if (prev.includes(providerId)) {
+        return prev.filter(id => id !== providerId)
+      } else {
+        return [...prev, providerId]
+      }
+    })
+  }
+
+  // 全选/取消全选供应商
+  const handleToggleAllProviders = () => {
+    if (selectedProviders.length === allProviders.length) {
+      setSelectedProviders([])
+    } else {
+      setSelectedProviders(allProviders.map(p => p.id))
+    }
   }
 
   return (
@@ -365,6 +395,7 @@ export function BalanceDashboard() {
                 <CardTitle>余额趋势</CardTitle>
                 <CardDescription>
                   {getTimeRangeText()}的余额变化 ({dataPointsCount} 个数据点)
+                  {selectedProviders.length > 0 && ` · 已选 ${selectedProviders.length} 个供应商`}
                 </CardDescription>
               </div>
               <div className="flex items-center gap-2">
@@ -399,6 +430,35 @@ export function BalanceDashboard() {
                 <Button size="sm" onClick={handleApplyCustomDays}>
                   应用
                 </Button>
+              </div>
+            )}
+            {allProviders.length > 0 && (
+              <div className="flex flex-col gap-2">
+                <div className="flex items-center justify-between">
+                  <label className="text-sm font-medium text-muted-foreground">筛选供应商:</label>
+                  <Button 
+                    variant="outline" 
+                    size="sm" 
+                    onClick={handleToggleAllProviders}
+                  >
+                    {selectedProviders.length === allProviders.length ? '取消全选' : '全选'}
+                  </Button>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  {allProviders.map((provider) => (
+                    <button
+                      key={provider.id}
+                      onClick={() => handleProviderToggle(provider.id)}
+                      className={`px-3 py-1.5 text-sm rounded-md border transition-colors ${
+                        selectedProviders.includes(provider.id)
+                          ? 'bg-primary text-primary-foreground border-primary'
+                          : 'bg-background hover:bg-accent border-border'
+                      }`}
+                    >
+                      {provider.name}
+                    </button>
+                  ))}
+                </div>
               </div>
             )}
           </div>

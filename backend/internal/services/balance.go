@@ -12,6 +12,11 @@ import (
 	"balance-monitor/internal/models"
 )
 
+const (
+	maxRetries     = 3              // 最大重试次数
+	retryDelay     = 2 * time.Second // 重试延迟时间
+)
+
 // checkResult 存储单个供应商的检查结果
 type checkResult struct {
 	provider database.Provider
@@ -62,7 +67,8 @@ func CheckAllProviders(db *sql.DB) ([]models.BalanceInfo, error) {
 	for _, provider := range providers {
 		// fmt.Printf("\n正在检查供应商: %s (ID: %d, URL: %s)\n", provider.Name, provider.ID, provider.UpstreamURL)
 		
-		quota, balance, err := fetchBalance(&provider)
+		// 带重试机制的余额获取
+		quota, balance, err := fetchBalanceWithRetry(&provider)
 		checkResults = append(checkResults, checkResult{
 			provider: provider,
 			quota:    quota,
@@ -116,6 +122,36 @@ func CheckAllProviders(db *sql.DB) ([]models.BalanceInfo, error) {
 	}
 
 	return results, nil
+}
+
+// fetchBalanceWithRetry 带重试机制的余额获取函数
+func fetchBalanceWithRetry(provider *database.Provider) (int64, float64, error) {
+	var lastErr error
+	
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		quota, balance, err := fetchBalance(provider)
+		
+		if err == nil {
+			// 成功获取余额
+			if attempt > 1 {
+				fmt.Printf("供应商 %s 在第 %d 次尝试后成功获取余额\n", provider.Name, attempt)
+			}
+			return quota, balance, nil
+		}
+		
+		// 记录错误
+		lastErr = err
+		
+		// 如果不是最后一次尝试，等待后重试
+		if attempt < maxRetries {
+			fmt.Printf("供应商 %s 第 %d 次尝试失败: %v，等待 %v 后重试...\n", 
+				provider.Name, attempt, err, retryDelay)
+			time.Sleep(retryDelay)
+		}
+	}
+	
+	// 所有重试都失败
+	return 0, 0, fmt.Errorf("尝试 %d 次后仍然失败，最后错误: %v", maxRetries, lastErr)
 }
 
 // fetchBalance 从上游获取余额信息（不保存到数据库）

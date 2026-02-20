@@ -3,10 +3,12 @@ package router
 import (
 	"database/sql"
 	"net/http"
+	"strconv"
 	"time"
 
 	"balance-monitor/internal/database"
 	"balance-monitor/internal/middleware"
+	"balance-monitor/internal/models"
 	"balance-monitor/internal/services"
 
 	"github.com/gin-gonic/gin"
@@ -69,6 +71,14 @@ func Setup(db *sql.DB) *gin.Engine {
 
 			// 通知历史
 			protected.GET("/notifications", getNotifications(db))
+
+			// 记账管理
+			protected.GET("/accounting/stats/provider", getProviderCostStats(db))
+			protected.GET("/accounting/stats/monthly", getMonthlyCostStats(db))
+			protected.POST("/accounting", createAccountingRecord(db))
+			protected.GET("/accounting", getAccountingRecords(db))
+			protected.PUT("/accounting/:id", updateAccountingRecord(db))
+			protected.DELETE("/accounting/:id", deleteAccountingRecord(db))
 		}
 	}
 
@@ -546,6 +556,144 @@ func getNotifications(db *sql.DB) gin.HandlerFunc {
 		}
 
 		c.JSON(http.StatusOK, notifications)
+	}
+}
+
+
+// 记账相关 handler
+
+func createAccountingRecord(db *sql.DB) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var req models.AccountingCreateRequest
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+
+		record, err := services.CreateAccountingRecord(db, req)
+		if err != nil {
+			switch err.Error() {
+			case "金额必须为正数", "供应商不存在":
+				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			default:
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "服务器内部错误"})
+			}
+			return
+		}
+
+		c.JSON(http.StatusCreated, record)
+	}
+}
+
+func getAccountingRecords(db *sql.DB) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		providerID := 0
+		if pidStr := c.Query("provider_id"); pidStr != "" {
+			pid, err := strconv.Atoi(pidStr)
+			if err == nil {
+				providerID = pid
+			}
+		}
+		startDate := c.Query("start_date")
+		endDate := c.Query("end_date")
+
+		records, err := services.GetAccountingRecords(db, providerID, startDate, endDate)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "服务器内部错误"})
+			return
+		}
+
+		c.JSON(http.StatusOK, records)
+	}
+}
+
+func updateAccountingRecord(db *sql.DB) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		id, err := strconv.Atoi(c.Param("id"))
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "无效的记录 ID"})
+			return
+		}
+
+		var req models.AccountingUpdateRequest
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+
+		if err := services.UpdateAccountingRecord(db, id, req); err != nil {
+			switch err.Error() {
+			case "记账记录不存在":
+				c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+			case "金额必须为正数":
+				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			default:
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "服务器内部错误"})
+			}
+			return
+		}
+
+		c.JSON(http.StatusOK, gin.H{"message": "更新成功"})
+	}
+}
+
+func deleteAccountingRecord(db *sql.DB) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		id, err := strconv.Atoi(c.Param("id"))
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "无效的记录 ID"})
+			return
+		}
+
+		if err := services.DeleteAccountingRecord(db, id); err != nil {
+			switch err.Error() {
+			case "记账记录不存在":
+				c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+			default:
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "服务器内部错误"})
+			}
+			return
+		}
+
+		c.JSON(http.StatusOK, gin.H{"message": "删除成功"})
+	}
+}
+
+func getProviderCostStats(db *sql.DB) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		startDate := c.Query("start_date")
+		endDate := c.Query("end_date")
+
+		summaries, totalAmount, err := services.GetProviderCostStats(db, startDate, endDate)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "服务器内部错误"})
+			return
+		}
+
+		c.JSON(http.StatusOK, gin.H{
+			"summaries":    summaries,
+			"total_amount": totalAmount,
+		})
+	}
+}
+
+func getMonthlyCostStats(db *sql.DB) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		providerID := 0
+		if pidStr := c.Query("provider_id"); pidStr != "" {
+			pid, err := strconv.Atoi(pidStr)
+			if err == nil {
+				providerID = pid
+			}
+		}
+
+		summaries, err := services.GetMonthlyCostStats(db, providerID)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "服务器内部错误"})
+			return
+		}
+
+		c.JSON(http.StatusOK, summaries)
 	}
 }
 

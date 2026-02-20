@@ -10,7 +10,8 @@ import { SMTPSettings } from '@/components/smtp-settings'
 import { MonitorSettings } from '@/components/monitor-settings'
 import { NotificationHistory } from '@/components/notification-history'
 import { BalanceHistory } from '@/components/balance-history'
-import { Activity, Settings, Bell, Server, Mail, Clock, LogOut, Loader2, History } from 'lucide-react'
+import { Accounting } from '@/components/accounting'
+import { Activity, Settings, Bell, Server, Mail, Clock, LogOut, Loader2, History, BookOpen } from 'lucide-react'
 import { checkInitStatus, getToken, removeToken } from '@/lib/api'
 
 export default function Home() {
@@ -86,7 +87,7 @@ export default function Home() {
         </div>
 
         <Tabs defaultValue="dashboard" className="space-y-6">
-          <TabsList className="grid w-full grid-cols-5 lg:w-auto">
+          <TabsList className="grid w-full grid-cols-6 lg:w-auto">
             <TabsTrigger value="dashboard" className="flex items-center gap-2">
               <Activity className="w-4 h-4" />
               <span className="hidden sm:inline">仪表盘</span>
@@ -107,6 +108,10 @@ export default function Home() {
               <Settings className="w-4 h-4" />
               <span className="hidden sm:inline">设置</span>
             </TabsTrigger>
+            <TabsTrigger value="accounting" className="flex items-center gap-2">
+              <BookOpen className="w-4 h-4" />
+              <span className="hidden sm:inline">记账</span>
+            </TabsTrigger>
           </TabsList>
 
           <TabsContent value="dashboard" className="space-y-6">
@@ -123,6 +128,10 @@ export default function Home() {
 
           <TabsContent value="notifications" className="space-y-6">
             <NotificationHistory />
+          </TabsContent>
+
+          <TabsContent value="accounting" className="space-y-6">
+            <Accounting />
           </TabsContent>
 
           <TabsContent value="settings" className="space-y-6">

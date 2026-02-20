@@ -95,6 +95,20 @@ func createTables(db *sql.DB) error {
 		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 	);
 
+	CREATE TABLE IF NOT EXISTS accounting_records (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		provider_id INTEGER NOT NULL,
+		amount REAL NOT NULL CHECK (amount > 0),
+		date TEXT NOT NULL,
+		note TEXT DEFAULT '',
+		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+		FOREIGN KEY (provider_id) REFERENCES providers(id) ON DELETE CASCADE
+	);
+
+	CREATE INDEX IF NOT EXISTS idx_accounting_provider ON accounting_records(provider_id);
+	CREATE INDEX IF NOT EXISTS idx_accounting_date ON accounting_records(date);
+
 	-- 插入默认 SMTP 设置
 	INSERT OR IGNORE INTO smtp_settings (id, enabled) VALUES (1, 0);
 	

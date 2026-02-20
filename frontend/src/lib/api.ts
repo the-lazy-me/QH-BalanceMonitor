@@ -104,5 +104,29 @@ export const getNotifications = (limit?: number) => {
   return api.get('/notifications', { params })
 }
 
+// 记账相关
+export const getAccountingRecords = (params?: {
+  provider_id?: number; start_date?: string; end_date?: string
+}) => api.get('/accounting', { params })
+
+export const createAccountingRecord = (data: {
+  provider_id: number; amount: number; date: string; note?: string
+}) => api.post('/accounting', data)
+
+export const updateAccountingRecord = (id: number, data: {
+  amount?: number; date?: string; note?: string
+}) => api.put(`/accounting/${id}`, data)
+
+export const deleteAccountingRecord = (id: number) =>
+  api.delete(`/accounting/${id}`)
+
+export const getProviderCostStats = (params?: {
+  start_date?: string; end_date?: string
+}) => api.get('/accounting/stats/provider', { params })
+
+export const getMonthlyCostStats = (params?: {
+  provider_id?: number
+}) => api.get('/accounting/stats/monthly', { params })
+
 export default api
 

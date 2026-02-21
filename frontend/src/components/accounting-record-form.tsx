@@ -64,7 +64,7 @@ export function AccountingRecordForm({
       } else {
         setProviderId(0)
         setAmount('')
-        setDate('')
+        setDate(new Date().toISOString().split('T')[0])
         setNote('')
       }
       setErrors({})

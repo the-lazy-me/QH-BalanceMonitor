@@ -234,10 +234,15 @@ func createProvider(db *sql.DB) gin.HandlerFunc {
 			return
 		}
 
+		// 设置默认查询模式
+		if provider.QueryMode == "" {
+			provider.QueryMode = "default"
+		}
+
 		result, err := db.Exec(`
-			INSERT INTO providers (name, upstream_url, authorization, new_api_user, enabled, alert_threshold, price_ratio)
-			VALUES (?, ?, ?, ?, ?, ?, ?)
-		`, provider.Name, provider.UpstreamURL, provider.Authorization, provider.NewAPIUser, provider.Enabled, provider.AlertThreshold, provider.PriceRatio)
+			INSERT INTO providers (name, upstream_url, authorization, new_api_user, enabled, alert_threshold, price_ratio, query_mode)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		`, provider.Name, provider.UpstreamURL, provider.Authorization, provider.NewAPIUser, provider.Enabled, provider.AlertThreshold, provider.PriceRatio, provider.QueryMode)
 
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -268,11 +273,16 @@ func updateProvider(db *sql.DB) gin.HandlerFunc {
 			return
 		}
 
+		// 设置默认查询模式
+		if provider.QueryMode == "" {
+			provider.QueryMode = "default"
+		}
+
 		_, err := db.Exec(`
 			UPDATE providers 
-			SET name = ?, upstream_url = ?, authorization = ?, new_api_user = ?, enabled = ?, alert_threshold = ?, price_ratio = ?, updated_at = CURRENT_TIMESTAMP
+			SET name = ?, upstream_url = ?, authorization = ?, new_api_user = ?, enabled = ?, alert_threshold = ?, price_ratio = ?, query_mode = ?, updated_at = CURRENT_TIMESTAMP
 			WHERE id = ?
-		`, provider.Name, provider.UpstreamURL, provider.Authorization, provider.NewAPIUser, provider.Enabled, provider.AlertThreshold, provider.PriceRatio, id)
+		`, provider.Name, provider.UpstreamURL, provider.Authorization, provider.NewAPIUser, provider.Enabled, provider.AlertThreshold, provider.PriceRatio, provider.QueryMode, id)
 
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})

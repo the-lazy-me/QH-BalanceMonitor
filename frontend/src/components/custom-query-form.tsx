@@ -57,7 +57,8 @@ export function CustomQueryForm({ providerId, visible, onChange, initialData }: 
   // Notify parent on any field change
   useEffect(() => {
     onChange(buildFormData())
-  }, [method, url, headers, balanceFieldPath, onChange, buildFormData])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [method, url, headers, balanceFieldPath])
 
   // Populate form from initialData
   useEffect(() => {

@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -41,6 +41,9 @@ export function ProvidersManagement() {
     price_ratio: 1,
   })
   const [customQueryData, setCustomQueryData] = useState<CustomQueryData | null>(null)
+  const handleCustomQueryChange = useCallback((data: CustomQueryData) => {
+    setCustomQueryData(data)
+  }, [])
   const { toast } = useToast()
 
   const loadProviders = async () => {
@@ -340,7 +343,7 @@ export function ProvidersManagement() {
                 placeholder="1"
               />
               <p className="text-xs text-muted-foreground">
-                1 元人民币可兑换的额度数量
+                1 元人民币可兑换的站内额度数量（例如：1 元 = 2 额度，则填 2）
               </p>
             </div>
             <div className="grid gap-2">
@@ -371,7 +374,7 @@ export function ProvidersManagement() {
               <CustomQueryForm
                 providerId={editingProvider?.id}
                 visible={formData.query_mode === 'custom'}
-                onChange={(data) => setCustomQueryData(data)}
+                onChange={handleCustomQueryChange}
                 initialData={customQueryData}
               />
             )}

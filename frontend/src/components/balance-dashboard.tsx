@@ -6,7 +6,7 @@ import { Button } from '@/components/ui/button'
 import { getCurrentBalance, manualCheckBalance, getBalanceHistory } from '@/lib/api'
 import { useToast } from '@/hooks/use-toast'
 import { RefreshCw, TrendingDown, TrendingUp, Plus, X, GripVertical } from 'lucide-react'
-import { formatBalance, formatDate } from '@/lib/utils'
+import { formatBalance, formatDate, calculateRMB, formatRMB } from '@/lib/utils'
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts'
 import {
   DndContext,
@@ -39,6 +39,7 @@ interface BalanceData {
   provider_name: string
   quota: number | null
   balance: number | null
+  price_ratio: number | null
   last_checked: string | null
 }
 
@@ -108,8 +109,11 @@ function SortableCard({
         </CardHeader>
         <CardContent>
           <div className="text-2xl font-bold">
-            {balance.balance !== null ? formatBalance(balance.balance) : '—'}
+            {balance.balance !== null ? formatRMB(calculateRMB(balance.balance, balance.price_ratio)) : '—'}
           </div>
+          <p className="text-xs text-muted-foreground">
+            {balance.balance !== null ? `额度: ${formatBalance(balance.balance)}` : ''}
+          </p>
           <p className="text-xs text-muted-foreground">
             {balance.last_checked ? formatDate(balance.last_checked) : '未检查'}
           </p>
@@ -518,11 +522,11 @@ export function BalanceDashboard() {
                       ? 'text-red-500'
                       : 'text-green-500'
                   }`}>
-                    {balance.balance !== null ? formatBalance(balance.balance) : '—'}
+                    {balance.balance !== null ? formatRMB(calculateRMB(balance.balance, balance.price_ratio)) : '—'}
                   </div>
-                  {balance.quota !== null && (
+                  {balance.balance !== null && (
                     <div className="text-sm text-muted-foreground">
-                      配额: {balance.quota.toLocaleString()}
+                      额度: {formatBalance(balance.balance)}
                     </div>
                   )}
                 </div>

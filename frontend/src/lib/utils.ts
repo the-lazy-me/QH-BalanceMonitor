@@ -20,3 +20,12 @@ export function formatBalance(balance: number): string {
   return balance.toFixed(2)
 }
 
+
+export function calculateRMB(balance: number, priceRatio: number | null | undefined): number {
+  const ratio = priceRatio && priceRatio > 0 ? priceRatio : 1
+  return balance / ratio
+}
+
+export function formatRMB(amount: number): string {
+  return `¥${amount.toFixed(2)}`
+}

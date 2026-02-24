@@ -7,7 +7,8 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import { getProviders, createProvider, updateProvider, deleteProvider } from '@/lib/api'
+import { getProviders, createProvider, updateProvider, deleteProvider, saveCustomQuery, getCustomQuery } from '@/lib/api'
+import { CustomQueryForm, CustomQueryData } from '@/components/custom-query-form'
 import { useToast } from '@/hooks/use-toast'
 import { Plus, Pencil, Trash2, Server } from 'lucide-react'
 
@@ -19,6 +20,8 @@ interface Provider {
   new_api_user: string
   enabled: boolean
   alert_threshold: number
+  query_mode: string
+  price_ratio: number
   created_at: string
   updated_at: string
 }
@@ -34,7 +37,10 @@ export function ProvidersManagement() {
     new_api_user: '1',
     enabled: true,
     alert_threshold: 10.0,
+    query_mode: 'default',
+    price_ratio: 1,
   })
+  const [customQueryData, setCustomQueryData] = useState<CustomQueryData | null>(null)
   const { toast } = useToast()
 
   const loadProviders = async () => {
@@ -54,7 +60,7 @@ export function ProvidersManagement() {
     loadProviders()
   }, [])
 
-  const handleOpenDialog = (provider?: Provider) => {
+  const handleOpenDialog = async (provider?: Provider) => {
     if (provider) {
       setEditingProvider(provider)
       setFormData({
@@ -64,7 +70,21 @@ export function ProvidersManagement() {
         new_api_user: provider.new_api_user,
         enabled: provider.enabled,
         alert_threshold: provider.alert_threshold,
+        query_mode: provider.query_mode || 'default',
+        price_ratio: provider.price_ratio ?? 1,
       })
+
+      // Load custom query config if in custom mode
+      if (provider.query_mode === 'custom') {
+        try {
+          const response = await getCustomQuery(provider.id)
+          setCustomQueryData(response.data)
+        } catch {
+          setCustomQueryData(null)
+        }
+      } else {
+        setCustomQueryData(null)
+      }
     } else {
       setEditingProvider(null)
       setFormData({
@@ -74,27 +94,52 @@ export function ProvidersManagement() {
         new_api_user: '1',
         enabled: true,
         alert_threshold: 10.0,
+        query_mode: 'default',
+        price_ratio: 1,
       })
+      setCustomQueryData(null)
     }
     setDialogOpen(true)
   }
 
   const handleSubmit = async () => {
+    if (!formData.price_ratio || formData.price_ratio <= 0) {
+      toast({
+        variant: 'destructive',
+        title: '校验失败',
+        description: '价格比例必须为正数',
+      })
+      return
+    }
+
     try {
+      let providerId: number
+
       if (editingProvider) {
         await updateProvider(editingProvider.id, formData)
-        toast({
-          title: '更新成功',
-          description: '供应商信息已更新',
-        })
+        providerId = editingProvider.id
+        toast({ title: '更新成功', description: '供应商信息已更新' })
       } else {
-        await createProvider(formData)
-        toast({
-          title: '创建成功',
-          description: '新供应商已添加',
-        })
+        const response = await createProvider(formData)
+        providerId = response.data.id
+        toast({ title: '创建成功', description: '新供应商已添加' })
       }
+
+      // Save custom query config if in custom mode
+      if (formData.query_mode === 'custom' && customQueryData) {
+        try {
+          await saveCustomQuery(providerId, customQueryData)
+        } catch (error: any) {
+          toast({
+            variant: 'destructive',
+            title: '自定义查询配置保存失败',
+            description: error.response?.data?.error || error.message,
+          })
+        }
+      }
+
       setDialogOpen(false)
+      setCustomQueryData(null)
       loadProviders()
     } catch (error: any) {
       toast({
@@ -146,12 +191,21 @@ export function ProvidersManagement() {
                   <Server className="h-5 w-5 text-primary" />
                   <CardTitle className="text-lg">{provider.name}</CardTitle>
                 </div>
-                <div className={`px-2 py-1 rounded text-xs font-medium ${
-                  provider.enabled
-                    ? 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200'
-                    : 'bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-200'
-                }`}>
-                  {provider.enabled ? '启用' : '禁用'}
+                <div className="flex items-center gap-1">
+                  <div className={`px-2 py-1 rounded text-xs font-medium ${
+                    provider.query_mode === 'custom'
+                      ? 'bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200'
+                      : 'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400'
+                  }`}>
+                    {provider.query_mode === 'custom' ? '自定义' : '默认'}
+                  </div>
+                  <div className={`px-2 py-1 rounded text-xs font-medium ${
+                    provider.enabled
+                      ? 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200'
+                      : 'bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-200'
+                  }`}>
+                    {provider.enabled ? '启用' : '禁用'}
+                  </div>
                 </div>
               </div>
               <CardDescription className="line-clamp-1">{provider.upstream_url}</CardDescription>
@@ -165,6 +219,10 @@ export function ProvidersManagement() {
                 <div>
                   <span className="text-muted-foreground">New-API-User:</span>
                   <span className="ml-2 font-mono">{provider.new_api_user}</span>
+                </div>
+                <div>
+                  <span className="text-muted-foreground">价格比例:</span>
+                  <span className="ml-2 font-mono">{provider.price_ratio ?? 1}</span>
                 </div>
               </div>
               <div className="flex gap-2 mt-4">
@@ -205,15 +263,18 @@ export function ProvidersManagement() {
         </Card>
       )}
 
-      <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-        <DialogContent className="sm:max-w-[500px]">
+      <Dialog open={dialogOpen} onOpenChange={(open) => {
+        setDialogOpen(open)
+        if (!open) setCustomQueryData(null)
+      }}>
+        <DialogContent className={formData.query_mode === 'custom' ? 'sm:max-w-[600px]' : 'sm:max-w-[500px]'}>
           <DialogHeader>
             <DialogTitle>{editingProvider ? '编辑供应商' : '添加供应商'}</DialogTitle>
             <DialogDescription>
               {editingProvider ? '修改供应商信息' : '添加新的上游余额供应商'}
             </DialogDescription>
           </DialogHeader>
-          <div className="grid gap-4 py-4">
+          <div className="grid gap-4 py-4 max-h-[70vh] overflow-y-auto">
             <div className="grid gap-2">
               <Label htmlFor="name">名称</Label>
               <Input
@@ -264,6 +325,56 @@ export function ProvidersManagement() {
                 当余额低于此值时发送告警邮件
               </p>
             </div>
+            <div className="grid gap-2">
+              <Label htmlFor="price_ratio">价格比例</Label>
+              <Input
+                id="price_ratio"
+                type="number"
+                step="any"
+                min="0"
+                value={formData.price_ratio}
+                onChange={(e) => {
+                  const val = parseFloat(e.target.value)
+                  setFormData({ ...formData, price_ratio: isNaN(val) ? 0 : val })
+                }}
+                placeholder="1"
+              />
+              <p className="text-xs text-muted-foreground">
+                1 元人民币可兑换的额度数量
+              </p>
+            </div>
+            <div className="grid gap-2">
+              <Label>查询模式</Label>
+              <div className="flex gap-2">
+                <Button
+                  type="button"
+                  variant={formData.query_mode === 'default' ? 'default' : 'outline'}
+                  size="sm"
+                  onClick={() => setFormData({ ...formData, query_mode: 'default' })}
+                >
+                  默认
+                </Button>
+                <Button
+                  type="button"
+                  variant={formData.query_mode === 'custom' ? 'default' : 'outline'}
+                  size="sm"
+                  onClick={() => setFormData({ ...formData, query_mode: 'custom' })}
+                >
+                  自定义
+                </Button>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                默认模式使用 New API 查询，自定义模式使用自定义 curl 查询
+              </p>
+            </div>
+            {formData.query_mode === 'custom' && (
+              <CustomQueryForm
+                providerId={editingProvider?.id}
+                visible={formData.query_mode === 'custom'}
+                onChange={(data) => setCustomQueryData(data)}
+                initialData={customQueryData}
+              />
+            )}
             <div className="flex items-center justify-between">
               <Label htmlFor="enabled">启用状态</Label>
               <Switch

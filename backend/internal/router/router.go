@@ -2,6 +2,7 @@ package router
 
 import (
 	"database/sql"
+	"encoding/json"
 	"net/http"
 	"strconv"
 	"time"
@@ -79,6 +80,17 @@ func Setup(db *sql.DB) *gin.Engine {
 			protected.GET("/accounting", getAccountingRecords(db))
 			protected.PUT("/accounting/:id", updateAccountingRecord(db))
 			protected.DELETE("/accounting/:id", deleteAccountingRecord(db))
+
+			// Curl 解析
+			protected.POST("/curl/parse", parseCurlHandler())
+
+			// 自定义查询测试
+			protected.POST("/custom-query/test", testCustomQueryHandler())
+
+			// 自定义查询配置 CRUD
+			protected.GET("/providers/:id/custom-query", getCustomQueryHandler(db))
+			protected.PUT("/providers/:id/custom-query", saveCustomQueryHandler(db))
+			protected.DELETE("/providers/:id/custom-query", deleteCustomQueryHandler(db))
 		}
 	}
 
@@ -176,7 +188,7 @@ func changePassword(db *sql.DB) gin.HandlerFunc {
 func getProviders(db *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		rows, err := db.Query(`
-			SELECT id, name, upstream_url, authorization, new_api_user, enabled, alert_threshold, created_at, updated_at
+			SELECT id, name, upstream_url, authorization, new_api_user, enabled, alert_threshold, query_mode, price_ratio, created_at, updated_at
 			FROM providers ORDER BY created_at DESC
 		`)
 		if err != nil {
@@ -188,7 +200,7 @@ func getProviders(db *sql.DB) gin.HandlerFunc {
 		var providers []database.Provider
 		for rows.Next() {
 			var p database.Provider
-			if err := rows.Scan(&p.ID, &p.Name, &p.UpstreamURL, &p.Authorization, &p.NewAPIUser, &p.Enabled, &p.AlertThreshold, &p.CreatedAt, &p.UpdatedAt); err != nil {
+			if err := rows.Scan(&p.ID, &p.Name, &p.UpstreamURL, &p.Authorization, &p.NewAPIUser, &p.Enabled, &p.AlertThreshold, &p.QueryMode, &p.PriceRatio, &p.CreatedAt, &p.UpdatedAt); err != nil {
 				continue
 			}
 			providers = append(providers, p)
@@ -211,10 +223,21 @@ func createProvider(db *sql.DB) gin.HandlerFunc {
 			provider.AlertThreshold = 10.0
 		}
 
+		// 设置默认价格比例
+		if provider.PriceRatio == 0 {
+			provider.PriceRatio = 1.0
+		}
+
+		// 校验价格比例必须为正数
+		if provider.PriceRatio <= 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "价格比例必须为正数"})
+			return
+		}
+
 		result, err := db.Exec(`
-			INSERT INTO providers (name, upstream_url, authorization, new_api_user, enabled, alert_threshold)
-			VALUES (?, ?, ?, ?, ?, ?)
-		`, provider.Name, provider.UpstreamURL, provider.Authorization, provider.NewAPIUser, provider.Enabled, provider.AlertThreshold)
+			INSERT INTO providers (name, upstream_url, authorization, new_api_user, enabled, alert_threshold, price_ratio)
+			VALUES (?, ?, ?, ?, ?, ?, ?)
+		`, provider.Name, provider.UpstreamURL, provider.Authorization, provider.NewAPIUser, provider.Enabled, provider.AlertThreshold, provider.PriceRatio)
 
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -239,11 +262,17 @@ func updateProvider(db *sql.DB) gin.HandlerFunc {
 			return
 		}
 
+		// 校验价格比例必须为正数
+		if provider.PriceRatio <= 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "价格比例必须为正数"})
+			return
+		}
+
 		_, err := db.Exec(`
 			UPDATE providers 
-			SET name = ?, upstream_url = ?, authorization = ?, new_api_user = ?, enabled = ?, alert_threshold = ?, updated_at = CURRENT_TIMESTAMP
+			SET name = ?, upstream_url = ?, authorization = ?, new_api_user = ?, enabled = ?, alert_threshold = ?, price_ratio = ?, updated_at = CURRENT_TIMESTAMP
 			WHERE id = ?
-		`, provider.Name, provider.UpstreamURL, provider.Authorization, provider.NewAPIUser, provider.Enabled, provider.AlertThreshold, id)
+		`, provider.Name, provider.UpstreamURL, provider.Authorization, provider.NewAPIUser, provider.Enabled, provider.AlertThreshold, provider.PriceRatio, id)
 
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -269,7 +298,7 @@ func deleteProvider(db *sql.DB) gin.HandlerFunc {
 func getCurrentBalance(db *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		rows, err := db.Query(`
-			SELECT p.id, p.name, bh.quota, bh.balance, bh.checked_at
+			SELECT p.id, p.name, p.price_ratio, bh.quota, bh.balance, bh.checked_at
 			FROM providers p
 			LEFT JOIN (
 				SELECT provider_id, quota, balance, checked_at,
@@ -289,17 +318,25 @@ func getCurrentBalance(db *sql.DB) gin.HandlerFunc {
 		for rows.Next() {
 			var id int
 			var name string
+			var priceRatio sql.NullFloat64
 			var quota sql.NullInt64
 			var balance sql.NullFloat64
 			var checkedAt sql.NullTime
 
-			if err := rows.Scan(&id, &name, &quota, &balance, &checkedAt); err != nil {
+			if err := rows.Scan(&id, &name, &priceRatio, &quota, &balance, &checkedAt); err != nil {
 				continue
+			}
+
+			// 若 price_ratio 为 NULL 或无效值，返回默认值 1.0
+			priceRatioValue := 1.0
+			if priceRatio.Valid && priceRatio.Float64 > 0 {
+				priceRatioValue = priceRatio.Float64
 			}
 
 			item := map[string]interface{}{
 				"provider_id":   id,
 				"provider_name": name,
+				"price_ratio":   priceRatioValue,
 			}
 
 			if quota.Valid {
@@ -697,3 +734,134 @@ func getMonthlyCostStats(db *sql.DB) gin.HandlerFunc {
 	}
 }
 
+
+// parseCurlHandler 解析 curl 命令
+func parseCurlHandler() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var req struct {
+			CurlCommand string `json:"curl_command" binding:"required"`
+		}
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "curl 命令不能为空"})
+			return
+		}
+		parsed, err := services.ParseCurl(req.CurlCommand)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, parsed)
+	}
+}
+
+// testCustomQueryHandler 测试自定义查询
+func testCustomQueryHandler() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var req struct {
+			Method           string            `json:"method"`
+			URL              string            `json:"url" binding:"required"`
+			Headers          map[string]string `json:"headers"`
+			BalanceFieldPath string            `json:"balance_field_path" binding:"required"`
+		}
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		if req.Method == "" {
+			req.Method = "GET"
+		}
+		if req.Headers == nil {
+			req.Headers = make(map[string]string)
+		}
+		balance, rawResp, err := services.ExecuteCustomQuery(req.Method, req.URL, req.Headers, req.BalanceFieldPath)
+		if err != nil {
+			c.JSON(http.StatusOK, gin.H{
+				"success":      false,
+				"error":        err.Error(),
+				"raw_response": rawResp,
+			})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{
+			"success":           true,
+			"extracted_balance": balance,
+			"raw_response":      rawResp,
+		})
+	}
+}
+
+// getCustomQueryHandler 获取供应商的自定义查询配置
+func getCustomQueryHandler(db *sql.DB) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		id, err := strconv.Atoi(c.Param("id"))
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "无效的供应商 ID"})
+			return
+		}
+		cq, err := services.GetCustomQuery(db, id)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		if cq == nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": "自定义查询配置不存在"})
+			return
+		}
+		// Parse headers JSON for response
+		var headers map[string]string
+		if err := json.Unmarshal([]byte(cq.Headers), &headers); err != nil {
+			headers = make(map[string]string)
+		}
+		c.JSON(http.StatusOK, gin.H{
+			"method":             cq.Method,
+			"url":                cq.URL,
+			"headers":            headers,
+			"balance_field_path": cq.BalanceFieldPath,
+		})
+	}
+}
+
+// saveCustomQueryHandler 保存/更新供应商的自定义查询配置
+func saveCustomQueryHandler(db *sql.DB) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		id, err := strconv.Atoi(c.Param("id"))
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "无效的供应商 ID"})
+			return
+		}
+		var req struct {
+			Method           string            `json:"method"`
+			URL              string            `json:"url"`
+			Headers          map[string]string `json:"headers"`
+			BalanceFieldPath string            `json:"balance_field_path"`
+		}
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		if req.Headers == nil {
+			req.Headers = make(map[string]string)
+		}
+		if err := services.SaveCustomQuery(db, id, req.Method, req.URL, req.Headers, req.BalanceFieldPath); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"message": "自定义查询配置已保存"})
+	}
+}
+
+// deleteCustomQueryHandler 删除供应商的自定义查询配置
+func deleteCustomQueryHandler(db *sql.DB) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		id, err := strconv.Atoi(c.Param("id"))
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "无效的供应商 ID"})
+			return
+		}
+		if err := services.DeleteCustomQuery(db, id); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"message": "自定义查询配置已删除"})
+	}
+}

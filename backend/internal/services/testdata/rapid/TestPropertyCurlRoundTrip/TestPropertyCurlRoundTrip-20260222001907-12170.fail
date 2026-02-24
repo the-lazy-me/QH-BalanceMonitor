@@ -1,0 +1,38 @@
+# 2026/02/22 00:19:07.465595 [TestPropertyCurlRoundTrip] [rapid] draw method: "GET"
+# 2026/02/22 00:19:07.465610 [TestPropertyCurlRoundTrip] [rapid] draw scheme: "https://"
+# 2026/02/22 00:19:07.465612 [TestPropertyCurlRoundTrip] [rapid] draw host: "a.a"
+# 2026/02/22 00:19:07.465612 [TestPropertyCurlRoundTrip] [rapid] draw path: ""
+# 2026/02/22 00:19:07.465613 [TestPropertyCurlRoundTrip] [rapid] draw numHeaders: 1
+# 2026/02/22 00:19:07.465613 [TestPropertyCurlRoundTrip] [rapid] draw headerKey: "A"
+# 2026/02/22 00:19:07.465614 [TestPropertyCurlRoundTrip] [rapid] draw headerValue: " "
+# 2026/02/22 00:19:07.465616 [TestPropertyCurlRoundTrip] header "A" mismatch: original=" ", roundTripped=""
+# 
+v0.4.8#935100403244578676
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x1
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0

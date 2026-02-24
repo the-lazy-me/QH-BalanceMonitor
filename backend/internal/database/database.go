@@ -2,6 +2,7 @@ package database
 
 import (
 	"database/sql"
+	"strings"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -106,6 +107,18 @@ func createTables(db *sql.DB) error {
 		FOREIGN KEY (provider_id) REFERENCES providers(id) ON DELETE CASCADE
 	);
 
+	CREATE TABLE IF NOT EXISTS custom_queries (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		provider_id INTEGER NOT NULL UNIQUE,
+		method TEXT NOT NULL DEFAULT 'GET',
+		url TEXT NOT NULL,
+		headers TEXT DEFAULT '{}',
+		balance_field_path TEXT NOT NULL,
+		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+		FOREIGN KEY (provider_id) REFERENCES providers(id) ON DELETE CASCADE
+	);
+
 	CREATE INDEX IF NOT EXISTS idx_accounting_provider ON accounting_records(provider_id);
 	CREATE INDEX IF NOT EXISTS idx_accounting_date ON accounting_records(date);
 
@@ -117,7 +130,28 @@ func createTables(db *sql.DB) error {
 	`
 
 	_, err := db.Exec(schema)
-	return err
+	if err != nil {
+		return err
+	}
+
+	// Migration: add query_mode to providers
+	_, err = db.Exec("ALTER TABLE providers ADD COLUMN query_mode TEXT DEFAULT 'default' NOT NULL")
+	if err != nil {
+		// Ignore "duplicate column" error (column already exists)
+		if !strings.Contains(err.Error(), "duplicate column") {
+			return err
+		}
+	}
+
+	// Migration: add price_ratio to providers
+	_, err = db.Exec("ALTER TABLE providers ADD COLUMN price_ratio REAL DEFAULT 1.0 NOT NULL")
+	if err != nil {
+		if !strings.Contains(err.Error(), "duplicate column") {
+			return err
+		}
+	}
+
+	return nil
 }
 
 type Provider struct {
@@ -128,6 +162,8 @@ type Provider struct {
 	NewAPIUser     string    `json:"new_api_user"`
 	Enabled        bool      `json:"enabled"`
 	AlertThreshold float64   `json:"alert_threshold"`
+	QueryMode      string    `json:"query_mode"`
+	PriceRatio     float64   `json:"price_ratio"`
 	CreatedAt      time.Time `json:"created_at"`
 	UpdatedAt      time.Time `json:"updated_at"`
 }
@@ -171,5 +207,16 @@ type User struct {
 	PasswordHash string    `json:"-"`
 	CreatedAt    time.Time `json:"created_at"`
 	UpdatedAt    time.Time `json:"updated_at"`
+}
+
+type CustomQuery struct {
+	ID               int       `json:"id"`
+	ProviderID       int       `json:"provider_id"`
+	Method           string    `json:"method"`
+	URL              string    `json:"url"`
+	Headers          string    `json:"headers"`
+	BalanceFieldPath string    `json:"balance_field_path"`
+	CreatedAt        time.Time `json:"created_at"`
+	UpdatedAt        time.Time `json:"updated_at"`
 }
 

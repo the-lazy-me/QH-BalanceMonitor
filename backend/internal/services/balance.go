@@ -35,7 +35,7 @@ func maskString(s string) string {
 
 func CheckAllProviders(db *sql.DB) ([]models.BalanceInfo, error) {
 	// 获取所有启用的供应商
-	rows, err := db.Query("SELECT id, name, upstream_url, authorization, new_api_user, alert_threshold FROM providers WHERE enabled = 1")
+	rows, err := db.Query("SELECT id, name, upstream_url, authorization, new_api_user, alert_threshold, query_mode FROM providers WHERE enabled = 1")
 	if err != nil {
 		return nil, err
 	}
@@ -44,7 +44,7 @@ func CheckAllProviders(db *sql.DB) ([]models.BalanceInfo, error) {
 	var providers []database.Provider
 	for rows.Next() {
 		var provider database.Provider
-		if err := rows.Scan(&provider.ID, &provider.Name, &provider.UpstreamURL, &provider.Authorization, &provider.NewAPIUser, &provider.AlertThreshold); err != nil {
+		if err := rows.Scan(&provider.ID, &provider.Name, &provider.UpstreamURL, &provider.Authorization, &provider.NewAPIUser, &provider.AlertThreshold, &provider.QueryMode); err != nil {
 			fmt.Printf("扫描供应商失败: %v\n", err)
 			continue
 		}
@@ -68,7 +68,7 @@ func CheckAllProviders(db *sql.DB) ([]models.BalanceInfo, error) {
 		// fmt.Printf("\n正在检查供应商: %s (ID: %d, URL: %s)\n", provider.Name, provider.ID, provider.UpstreamURL)
 		
 		// 带重试机制的余额获取
-		quota, balance, err := fetchBalanceWithRetry(&provider)
+		quota, balance, err := fetchBalanceWithRetry(db, &provider)
 		checkResults = append(checkResults, checkResult{
 			provider: provider,
 			quota:    quota,
@@ -125,11 +125,11 @@ func CheckAllProviders(db *sql.DB) ([]models.BalanceInfo, error) {
 }
 
 // fetchBalanceWithRetry 带重试机制的余额获取函数
-func fetchBalanceWithRetry(provider *database.Provider) (int64, float64, error) {
+func fetchBalanceWithRetry(db *sql.DB, provider *database.Provider) (int64, float64, error) {
 	var lastErr error
 	
 	for attempt := 1; attempt <= maxRetries; attempt++ {
-		quota, balance, err := fetchBalance(provider)
+		quota, balance, err := fetchBalance(db, provider)
 		
 		if err == nil {
 			// 成功获取余额
@@ -155,7 +155,32 @@ func fetchBalanceWithRetry(provider *database.Provider) (int64, float64, error) 
 }
 
 // fetchBalance 从上游获取余额信息（不保存到数据库）
-func fetchBalance(provider *database.Provider) (int64, float64, error) {
+func fetchBalance(db *sql.DB, provider *database.Provider) (int64, float64, error) {
+	// 根据 query_mode 分发到不同的查询逻辑
+	if provider.QueryMode == "custom" {
+		// 使用自定义查询
+		cq, err := GetCustomQuery(db, provider.ID)
+		if err != nil {
+			return 0, 0, fmt.Errorf("获取自定义查询配置失败: %v", err)
+		}
+		if cq == nil {
+			return 0, 0, fmt.Errorf("供应商 %s 的自定义查询配置不存在", provider.Name)
+		}
+
+		// 解析 headers JSON
+		var headers map[string]string
+		if err := json.Unmarshal([]byte(cq.Headers), &headers); err != nil {
+			headers = make(map[string]string)
+		}
+
+		balance, _, err := ExecuteCustomQuery(cq.Method, cq.URL, headers, cq.BalanceFieldPath)
+		if err != nil {
+			return 0, 0, err
+		}
+		return 0, balance, nil
+	}
+
+	// 默认查询逻辑：New API 查询
 	requestURL := provider.UpstreamURL + "/api/user/self"
 	// fmt.Printf("  → 请求 URL: %s\n", requestURL)
 	

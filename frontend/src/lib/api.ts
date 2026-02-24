@@ -128,5 +128,29 @@ export const getMonthlyCostStats = (params?: {
   provider_id?: number
 }) => api.get('/accounting/stats/monthly', { params })
 
+// 自定义查询相关
+export const parseCurl = (curlCommand: string) =>
+  api.post('/curl/parse', { curl_command: curlCommand })
+
+export const testCustomQuery = (data: {
+  method: string
+  url: string
+  headers: Record<string, string>
+  balance_field_path: string
+}) => api.post('/custom-query/test', data)
+
+export const getCustomQuery = (providerId: number) =>
+  api.get(`/providers/${providerId}/custom-query`)
+
+export const saveCustomQuery = (providerId: number, data: {
+  method: string
+  url: string
+  headers: Record<string, string>
+  balance_field_path: string
+}) => api.put(`/providers/${providerId}/custom-query`, data)
+
+export const deleteCustomQuery = (providerId: number) =>
+  api.delete(`/providers/${providerId}/custom-query`)
+
 export default api
 

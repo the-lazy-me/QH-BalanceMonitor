@@ -224,8 +224,8 @@ export function ProvidersManagement() {
                   <span className="ml-2 font-mono">{provider.new_api_user}</span>
                 </div>
                 <div>
-                  <span className="text-muted-foreground">价格比例:</span>
-                  <span className="ml-2 font-mono">{provider.price_ratio ?? 1}</span>
+                  <span className="text-muted-foreground">兑换比例:</span>
+                  <span className="ml-2 font-mono">{provider.price_ratio ?? 1} 元/额度</span>
                 </div>
               </div>
               <div className="flex gap-2 mt-4">
@@ -329,7 +329,7 @@ export function ProvidersManagement() {
               </p>
             </div>
             <div className="grid gap-2">
-              <Label htmlFor="price_ratio">价格比例</Label>
+              <Label htmlFor="price_ratio">兑换比例（元/额度）</Label>
               <Input
                 id="price_ratio"
                 type="number"
@@ -343,7 +343,7 @@ export function ProvidersManagement() {
                 placeholder="1"
               />
               <p className="text-xs text-muted-foreground">
-                1 元人民币可兑换的站内额度数量（例如：1 元 = 2 额度，则填 2）
+                1 站内额度需要多少人民币（例如：1 额度 = 0.5 元，则填 0.5）
               </p>
             </div>
             <div className="grid gap-2">

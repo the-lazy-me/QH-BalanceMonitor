@@ -47,6 +47,11 @@ export function CustomQueryForm({ providerId, visible, onChange, initialData }: 
   const isPopulatingRef = useRef(false)
   const appliedInitialRef = useRef<string | null>(null)
 
+  // Reset refs on mount so re-opening the form always applies initialData
+  useEffect(() => {
+    appliedInitialRef.current = null
+  }, [])
+
   // Build current form data for onChange callback
   const buildFormData = useCallback((): CustomQueryData => {
     const headersMap: Record<string, string> = {}

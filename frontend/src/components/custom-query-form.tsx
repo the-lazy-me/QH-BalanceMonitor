@@ -54,11 +54,14 @@ export function CustomQueryForm({ providerId, visible, onChange, initialData }: 
     return { method, url, headers: headersMap, balance_field_path: balanceFieldPath }
   }, [method, url, headers, balanceFieldPath])
 
+  // Stable serialization of headers to avoid infinite re-render loops
+  const headersKey = JSON.stringify(headers)
+
   // Notify parent on any field change
   useEffect(() => {
     onChange(buildFormData())
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [method, url, headers, balanceFieldPath])
+  }, [method, url, headersKey, balanceFieldPath])
 
   // Populate form from initialData
   useEffect(() => {

@@ -9,6 +9,7 @@ import { RefreshCw, TrendingDown, TrendingUp, Plus, X, GripVertical } from 'luci
 import { formatBalance, formatDate, calculateRMB, formatRMB } from '@/lib/utils'
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts'
 import { RMBBalanceChart } from '@/components/rmb-balance-chart'
+import { RMBConsumptionChart } from '@/components/rmb-consumption-chart'
 import {
   DndContext,
   closestCenter,
@@ -393,6 +394,8 @@ export function BalanceDashboard() {
       )}
 
       <RMBBalanceChart />
+
+      <RMBConsumptionChart />
 
       <Card>
         <CardHeader>

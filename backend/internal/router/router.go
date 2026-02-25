@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"net/http"
+	"sort"
 	"strconv"
 	"time"
 
@@ -60,6 +61,7 @@ func Setup(db *sql.DB) *gin.Engine {
 			protected.GET("/balance", getCurrentBalance(db))
 			protected.GET("/balance/history", getBalanceHistory(db))
 			protected.GET("/balance/history/rmb", getBalanceHistoryRMB(db))
+			protected.GET("/balance/consumption/rmb", getBalanceConsumptionRMB(db))
 			protected.POST("/balance/check", manualCheckBalance(db))
 
 			// SMTP 设置
@@ -501,6 +503,82 @@ func getBalanceHistoryRMB(db *sql.DB) gin.HandlerFunc {
 		c.JSON(http.StatusOK, history)
 	}
 }
+
+func getBalanceConsumptionRMB(db *sql.DB) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		providerID := c.Query("provider_id")
+		days := c.DefaultQuery("days", "7")
+
+		query := `
+			SELECT bh.provider_id, p.name,
+				bh.balance * COALESCE(NULLIF(p.price_ratio, 0), 1.0) AS rmb_balance,
+				bh.checked_at
+			FROM balance_history bh
+			JOIN providers p ON bh.provider_id = p.id
+			WHERE bh.checked_at >= datetime('now', '-' || ? || ' days')
+		`
+		args := []interface{}{days}
+
+		if providerID != "" {
+			query += " AND bh.provider_id = ?"
+			args = append(args, providerID)
+		}
+
+		query += " ORDER BY bh.provider_id, bh.checked_at ASC"
+
+		rows, err := db.Query(query, args...)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		defer rows.Close()
+
+		// Collect raw data grouped by provider
+		type record struct {
+			rmbBalance float64
+			checkedAt  time.Time
+		}
+		providerRecords := make(map[int][]record)
+		providerNames := make(map[int]string)
+
+		for rows.Next() {
+			var pid int
+			var name string
+			var rmbBalance float64
+			var checkedAt time.Time
+			if err := rows.Scan(&pid, &name, &rmbBalance, &checkedAt); err != nil {
+				continue
+			}
+			providerRecords[pid] = append(providerRecords[pid], record{rmbBalance, checkedAt})
+			providerNames[pid] = name
+		}
+
+		// Calculate consumption (prev - current, positive = consumed)
+		var result []map[string]interface{}
+		for pid, records := range providerRecords {
+			for i := 1; i < len(records); i++ {
+				consumption := records[i-1].rmbBalance - records[i].rmbBalance
+				if consumption < 0 {
+					consumption = 0 // Recharge or fluctuation, not consumption
+				}
+				result = append(result, map[string]interface{}{
+					"provider_id":   pid,
+					"provider_name": providerNames[pid],
+					"consumption":   consumption,
+					"checked_at":    records[i].checkedAt.Format(time.RFC3339),
+				})
+			}
+		}
+
+		// Sort by checked_at
+		sort.Slice(result, func(i, j int) bool {
+			return result[i]["checked_at"].(string) < result[j]["checked_at"].(string)
+		})
+
+		c.JSON(http.StatusOK, result)
+	}
+}
+
 
 
 func manualCheckBalance(db *sql.DB) gin.HandlerFunc {

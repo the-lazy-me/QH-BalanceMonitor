@@ -7,7 +7,7 @@ import { getBalanceConsumptionRMB } from '@/lib/api'
 import { useToast } from '@/hooks/use-toast'
 import { formatRMB } from '@/lib/utils'
 import {
-  BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
+  BarChart, Bar, Cell, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
   ResponsiveContainer,
 } from 'recharts'
 
@@ -93,6 +93,18 @@ export function RMBConsumptionChart() {
       prev.length === allProviders.length ? [] : allProviders.map(p => p.id)
     )
   }
+
+  // 根据消耗值在 绿→黄→橙→红 之间插值
+  const getConsumptionColor = useMemo(() => {
+    const maxVal = Math.max(...chartData.map(d => d.__total__ || 0), 1)
+    return (value: number) => {
+      const ratio = Math.min(value / maxVal, 1)
+      if (ratio < 0.25) return '#22c55e' // green
+      if (ratio < 0.5) return '#eab308'  // yellow
+      if (ratio < 0.75) return '#f97316' // orange
+      return '#ef4444'                    // red
+    }
+  }, [chartData])
 
   const CustomTooltip = ({ active, payload, label }: any) => {
     if (!active || !payload?.length) return null
@@ -197,7 +209,11 @@ export function RMBConsumptionChart() {
                 <YAxis tickFormatter={(v) => `¥${v.toFixed(0)}`} />
                 <Tooltip content={<CustomTooltip />} />
                 <Legend formatter={() => '总消耗 (¥)'} />
-                <Bar dataKey="__total__" fill="#ef4444" radius={[4, 4, 0, 0]} name="__total__" />
+                <Bar dataKey="__total__" radius={[4, 4, 0, 0]} name="__total__">
+                  {chartData.map((entry, index) => (
+                    <Cell key={index} fill={getConsumptionColor(entry.__total__ || 0)} />
+                  ))}
+                </Bar>
               </BarChart>
             ) : (
               <LineChart data={chartData}>

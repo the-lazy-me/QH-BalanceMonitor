@@ -15,7 +15,7 @@ interface ConsumptionItem {
   provider_id: number
   provider_name: string
   consumption: number
-  checked_at: string
+  date: string
 }
 
 type ViewMode = 'total' | 'individual'
@@ -61,11 +61,11 @@ export function RMBConsumptionChart() {
     const timeMap = new Map<string, Record<string, number>>()
 
     filtered.forEach(item => {
-      const timeKey = new Date(item.checked_at).toLocaleString('zh-CN', {
-        month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
-      })
-      if (!timeMap.has(timeKey)) timeMap.set(timeKey, {})
-      const entry = timeMap.get(timeKey)!
+      // date 格式为 YYYY-MM-DD，转为 MM/DD 显示
+      const parts = item.date.split('-')
+      const dateKey = `${parts[1]}/${parts[2]}`
+      if (!timeMap.has(dateKey)) timeMap.set(dateKey, {})
+      const entry = timeMap.get(dateKey)!
       entry[item.provider_name] = (entry[item.provider_name] || 0) + item.consumption
     })
 
@@ -122,7 +122,7 @@ export function RMBConsumptionChart() {
                 </span>
               </CardTitle>
               <CardDescription>
-                相邻检查点间的余额下降量（折算人民币） · {chartData.length} 个数据点
+                每日余额下降量（折算人民币） · {chartData.length} 天
                 {selectedProviders.length > 0 && ` · 已选 ${selectedProviders.length} 个供应商`}
               </CardDescription>
             </div>

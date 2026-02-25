@@ -4,7 +4,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"net/http"
-	"sort"
 	"strconv"
 	"time"
 
@@ -504,18 +503,28 @@ func getBalanceHistoryRMB(db *sql.DB) gin.HandlerFunc {
 	}
 }
 
+
 func getBalanceConsumptionRMB(db *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		providerID := c.Query("provider_id")
 		days := c.DefaultQuery("days", "7")
 
+		// 每天每个供应商取最早和最晚的余额，差值为当天消耗
 		query := `
-			SELECT bh.provider_id, p.name,
-				bh.balance * COALESCE(NULLIF(p.price_ratio, 0), 1.0) AS rmb_balance,
-				bh.checked_at
-			FROM balance_history bh
-			JOIN providers p ON bh.provider_id = p.id
-			WHERE bh.checked_at >= datetime('now', '-' || ? || ' days')
+			SELECT sub.provider_id, sub.provider_name, sub.date,
+				sub.first_balance - sub.last_balance AS consumption
+			FROM (
+				SELECT bh.provider_id, p.name AS provider_name,
+					DATE(bh.checked_at) AS date,
+					-- first_value / last_value over the day window
+					FIRST_VALUE(bh.balance * COALESCE(NULLIF(p.price_ratio, 0), 1.0))
+						OVER (PARTITION BY bh.provider_id, DATE(bh.checked_at) ORDER BY bh.checked_at ASC) AS first_balance,
+					FIRST_VALUE(bh.balance * COALESCE(NULLIF(p.price_ratio, 0), 1.0))
+						OVER (PARTITION BY bh.provider_id, DATE(bh.checked_at) ORDER BY bh.checked_at DESC) AS last_balance,
+					ROW_NUMBER() OVER (PARTITION BY bh.provider_id, DATE(bh.checked_at) ORDER BY bh.checked_at ASC) AS rn
+				FROM balance_history bh
+				JOIN providers p ON bh.provider_id = p.id
+				WHERE bh.checked_at >= datetime('now', '-' || ? || ' days')
 		`
 		args := []interface{}{days}
 
@@ -524,7 +533,11 @@ func getBalanceConsumptionRMB(db *sql.DB) gin.HandlerFunc {
 			args = append(args, providerID)
 		}
 
-		query += " ORDER BY bh.provider_id, bh.checked_at ASC"
+		query += `
+			) sub
+			WHERE sub.rn = 1
+			ORDER BY sub.date ASC, sub.provider_name ASC
+		`
 
 		rows, err := db.Query(query, args...)
 		if err != nil {
@@ -533,51 +546,30 @@ func getBalanceConsumptionRMB(db *sql.DB) gin.HandlerFunc {
 		}
 		defer rows.Close()
 
-		// Collect raw data grouped by provider
-		type record struct {
-			rmbBalance float64
-			checkedAt  time.Time
-		}
-		providerRecords := make(map[int][]record)
-		providerNames := make(map[int]string)
-
+		var result []map[string]interface{}
 		for rows.Next() {
 			var pid int
-			var name string
-			var rmbBalance float64
-			var checkedAt time.Time
-			if err := rows.Scan(&pid, &name, &rmbBalance, &checkedAt); err != nil {
+			var name, date string
+			var consumption float64
+			if err := rows.Scan(&pid, &name, &date, &consumption); err != nil {
 				continue
 			}
-			providerRecords[pid] = append(providerRecords[pid], record{rmbBalance, checkedAt})
-			providerNames[pid] = name
-		}
-
-		// Calculate consumption (prev - current, positive = consumed)
-		var result []map[string]interface{}
-		for pid, records := range providerRecords {
-			for i := 1; i < len(records); i++ {
-				consumption := records[i-1].rmbBalance - records[i].rmbBalance
-				if consumption < 0 {
-					consumption = 0 // Recharge or fluctuation, not consumption
-				}
-				result = append(result, map[string]interface{}{
-					"provider_id":   pid,
-					"provider_name": providerNames[pid],
-					"consumption":   consumption,
-					"checked_at":    records[i].checkedAt.Format(time.RFC3339),
-				})
+			// 负值表示充值，不计入消耗
+			if consumption < 0 {
+				consumption = 0
 			}
+			result = append(result, map[string]interface{}{
+				"provider_id":   pid,
+				"provider_name": name,
+				"consumption":   consumption,
+				"date":          date,
+			})
 		}
-
-		// Sort by checked_at
-		sort.Slice(result, func(i, j int) bool {
-			return result[i]["checked_at"].(string) < result[j]["checked_at"].(string)
-		})
 
 		c.JSON(http.StatusOK, result)
 	}
 }
+
 
 
 

@@ -23,7 +23,7 @@ export function formatBalance(balance: number): string {
 
 export function calculateRMB(balance: number, priceRatio: number | null | undefined): number {
   const ratio = priceRatio && priceRatio > 0 ? priceRatio : 1
-  return balance / ratio
+  return balance * ratio
 }
 
 export function formatRMB(amount: number): string {

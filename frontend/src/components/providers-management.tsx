@@ -270,7 +270,7 @@ export function ProvidersManagement() {
         setDialogOpen(open)
         if (!open) setCustomQueryData(null)
       }}>
-        <DialogContent className={formData.query_mode === 'custom' ? 'sm:max-w-[600px]' : 'sm:max-w-[500px]'}>
+        <DialogContent className="sm:max-w-[700px]">
           <DialogHeader>
             <DialogTitle>{editingProvider ? '编辑供应商' : '添加供应商'}</DialogTitle>
             <DialogDescription>
@@ -288,32 +288,68 @@ export function ProvidersManagement() {
               />
             </div>
             <div className="grid gap-2">
-              <Label htmlFor="upstream_url">上游地址</Label>
-              <Input
-                id="upstream_url"
-                value={formData.upstream_url}
-                onChange={(e) => setFormData({ ...formData, upstream_url: e.target.value })}
-                placeholder="https://example.com"
-              />
+              <Label>查询模式</Label>
+              <div className="flex gap-2">
+                <Button
+                  type="button"
+                  variant={formData.query_mode === 'default' ? 'default' : 'outline'}
+                  size="sm"
+                  onClick={() => setFormData({ ...formData, query_mode: 'default' })}
+                >
+                  默认
+                </Button>
+                <Button
+                  type="button"
+                  variant={formData.query_mode === 'custom' ? 'default' : 'outline'}
+                  size="sm"
+                  onClick={() => setFormData({ ...formData, query_mode: 'custom' })}
+                >
+                  自定义
+                </Button>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                默认模式使用 New API 查询，自定义模式使用自定义 curl 查询
+              </p>
             </div>
-            <div className="grid gap-2">
-              <Label htmlFor="authorization">Authorization</Label>
-              <Input
-                id="authorization"
-                value={formData.authorization}
-                onChange={(e) => setFormData({ ...formData, authorization: e.target.value })}
-                placeholder="Bearer token 或其他认证信息"
+            {formData.query_mode === 'default' && (
+              <>
+                <div className="grid gap-2">
+                  <Label htmlFor="upstream_url">上游地址</Label>
+                  <Input
+                    id="upstream_url"
+                    value={formData.upstream_url}
+                    onChange={(e) => setFormData({ ...formData, upstream_url: e.target.value })}
+                    placeholder="https://example.com"
+                  />
+                </div>
+                <div className="grid gap-2">
+                  <Label htmlFor="authorization">Authorization</Label>
+                  <Input
+                    id="authorization"
+                    value={formData.authorization}
+                    onChange={(e) => setFormData({ ...formData, authorization: e.target.value })}
+                    placeholder="Bearer token 或其他认证信息"
+                  />
+                </div>
+                <div className="grid gap-2">
+                  <Label htmlFor="new_api_user">New-API-User</Label>
+                  <Input
+                    id="new_api_user"
+                    value={formData.new_api_user}
+                    onChange={(e) => setFormData({ ...formData, new_api_user: e.target.value })}
+                    placeholder="1"
+                  />
+                </div>
+              </>
+            )}
+            {formData.query_mode === 'custom' && (
+              <CustomQueryForm
+                providerId={editingProvider?.id}
+                visible={formData.query_mode === 'custom'}
+                onChange={handleCustomQueryChange}
+                initialData={customQueryData}
               />
-            </div>
-            <div className="grid gap-2">
-              <Label htmlFor="new_api_user">New-API-User</Label>
-              <Input
-                id="new_api_user"
-                value={formData.new_api_user}
-                onChange={(e) => setFormData({ ...formData, new_api_user: e.target.value })}
-                placeholder="1"
-              />
-            </div>
+            )}
             <div className="grid gap-2">
               <Label htmlFor="alert_threshold">告警阈值</Label>
               <Input
@@ -346,38 +382,6 @@ export function ProvidersManagement() {
                 1 站内额度需要多少人民币（例如：1 额度 = 0.5 元，则填 0.5）
               </p>
             </div>
-            <div className="grid gap-2">
-              <Label>查询模式</Label>
-              <div className="flex gap-2">
-                <Button
-                  type="button"
-                  variant={formData.query_mode === 'default' ? 'default' : 'outline'}
-                  size="sm"
-                  onClick={() => setFormData({ ...formData, query_mode: 'default' })}
-                >
-                  默认
-                </Button>
-                <Button
-                  type="button"
-                  variant={formData.query_mode === 'custom' ? 'default' : 'outline'}
-                  size="sm"
-                  onClick={() => setFormData({ ...formData, query_mode: 'custom' })}
-                >
-                  自定义
-                </Button>
-              </div>
-              <p className="text-xs text-muted-foreground">
-                默认模式使用 New API 查询，自定义模式使用自定义 curl 查询
-              </p>
-            </div>
-            {formData.query_mode === 'custom' && (
-              <CustomQueryForm
-                providerId={editingProvider?.id}
-                visible={formData.query_mode === 'custom'}
-                onChange={handleCustomQueryChange}
-                initialData={customQueryData}
-              />
-            )}
             <div className="flex items-center justify-between">
               <Label htmlFor="enabled">启用状态</Label>
               <Switch

@@ -86,6 +86,12 @@ export const getBalanceHistory = (providerId?: number, limit?: number, days?: nu
   if (days) params.days = days
   return api.get('/balance/history', { params })
 }
+export const getBalanceHistoryRMB = (days?: number, providerId?: number) => {
+  const params: any = {}
+  if (days) params.days = days
+  if (providerId) params.provider_id = providerId
+  return api.get('/balance/history/rmb', { params })
+}
 export const manualCheckBalance = () => api.post('/balance/check')
 
 // SMTP 设置

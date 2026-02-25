@@ -59,6 +59,7 @@ func Setup(db *sql.DB) *gin.Engine {
 			// 余额相关
 			protected.GET("/balance", getCurrentBalance(db))
 			protected.GET("/balance/history", getBalanceHistory(db))
+			protected.GET("/balance/history/rmb", getBalanceHistoryRMB(db))
 			protected.POST("/balance/check", manualCheckBalance(db))
 
 			// SMTP 设置
@@ -448,6 +449,59 @@ func getBalanceHistory(db *sql.DB) gin.HandlerFunc {
 		c.JSON(http.StatusOK, history)
 	}
 }
+
+func getBalanceHistoryRMB(db *sql.DB) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		providerID := c.Query("provider_id")
+		days := c.DefaultQuery("days", "7")
+
+		query := `
+			SELECT bh.provider_id, p.name,
+				bh.balance * COALESCE(NULLIF(p.price_ratio, 0), 1.0) AS rmb_balance,
+				bh.checked_at
+			FROM balance_history bh
+			JOIN providers p ON bh.provider_id = p.id
+			WHERE bh.checked_at >= datetime('now', '-' || ? || ' days')
+		`
+		args := []interface{}{days}
+
+		if providerID != "" {
+			query += " AND bh.provider_id = ?"
+			args = append(args, providerID)
+		}
+
+		query += " ORDER BY bh.checked_at ASC"
+
+		rows, err := db.Query(query, args...)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		defer rows.Close()
+
+		var history []map[string]interface{}
+		for rows.Next() {
+			var pid int
+			var name string
+			var rmbBalance float64
+			var checkedAt time.Time
+
+			if err := rows.Scan(&pid, &name, &rmbBalance, &checkedAt); err != nil {
+				continue
+			}
+
+			history = append(history, map[string]interface{}{
+				"provider_id":   pid,
+				"provider_name": name,
+				"rmb_balance":   rmbBalance,
+				"checked_at":    checkedAt.Format(time.RFC3339),
+			})
+		}
+
+		c.JSON(http.StatusOK, history)
+	}
+}
+
 
 func manualCheckBalance(db *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {

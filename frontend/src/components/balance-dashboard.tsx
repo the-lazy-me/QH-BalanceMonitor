@@ -392,7 +392,7 @@ export function BalanceDashboard() {
         </Card>
       )}
 
-      <RMBBalanceChart history={history} balances={balances} />
+      <RMBBalanceChart />
 
       <Card>
         <CardHeader>

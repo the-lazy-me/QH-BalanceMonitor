@@ -44,6 +44,8 @@ export function CustomQueryForm({ providerId, visible, onChange, initialData }: 
   const [parseError, setParseError] = useState('')
   const [validationErrors, setValidationErrors] = useState<ValidationErrors>({})
   const lastCurlRef = useRef('')
+  const isPopulatingRef = useRef(false)
+  const appliedInitialRef = useRef<string | null>(null)
 
   // Build current form data for onChange callback
   const buildFormData = useCallback((): CustomQueryData => {
@@ -57,24 +59,31 @@ export function CustomQueryForm({ providerId, visible, onChange, initialData }: 
   // Stable serialization of headers to avoid infinite re-render loops
   const headersKey = JSON.stringify(headers)
 
-  // Notify parent on any field change
+  // Notify parent on any field change (skip during initialData population)
   useEffect(() => {
+    if (isPopulatingRef.current) return
     onChange(buildFormData())
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [method, url, headersKey, balanceFieldPath])
 
-  // Populate form from initialData
+  // Populate form from initialData (only once per unique data)
   useEffect(() => {
-    if (initialData) {
-      setMethod(initialData.method || 'GET')
-      setUrl(initialData.url || '')
-      setBalanceFieldPath(initialData.balance_field_path || '')
-      const headerEntries = Object.entries(initialData.headers || {})
-      setHeaders(headerEntries.length > 0
-        ? headerEntries.map(([key, value]) => ({ key, value }))
-        : []
-      )
-    }
+    if (!initialData) return
+    const key = JSON.stringify(initialData)
+    if (key === appliedInitialRef.current) return
+    appliedInitialRef.current = key
+
+    isPopulatingRef.current = true
+    setMethod(initialData.method || 'GET')
+    setUrl(initialData.url || '')
+    setBalanceFieldPath(initialData.balance_field_path || '')
+    const headerEntries = Object.entries(initialData.headers || {})
+    setHeaders(headerEntries.length > 0
+      ? headerEntries.map(([key, value]) => ({ key, value }))
+      : []
+    )
+    // Allow onChange to fire again after this render cycle
+    requestAnimationFrame(() => { isPopulatingRef.current = false })
   }, [initialData])
 
   // Parse curl command

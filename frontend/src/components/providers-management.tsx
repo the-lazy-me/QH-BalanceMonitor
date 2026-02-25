@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -41,8 +41,9 @@ export function ProvidersManagement() {
     price_ratio: 1,
   })
   const [customQueryData, setCustomQueryData] = useState<CustomQueryData | null>(null)
+  const customQueryLatestRef = useRef<CustomQueryData | null>(null)
   const handleCustomQueryChange = useCallback((data: CustomQueryData) => {
-    setCustomQueryData(data)
+    customQueryLatestRef.current = data
   }, [])
   const { toast } = useToast()
 
@@ -129,9 +130,9 @@ export function ProvidersManagement() {
       }
 
       // Save custom query config if in custom mode
-      if (formData.query_mode === 'custom' && customQueryData) {
+      if (formData.query_mode === 'custom' && (customQueryLatestRef.current || customQueryData)) {
         try {
-          await saveCustomQuery(providerId, customQueryData)
+          await saveCustomQuery(providerId, (customQueryLatestRef.current || customQueryData)!)
         } catch (error: any) {
           toast({
             variant: 'destructive',
@@ -143,6 +144,7 @@ export function ProvidersManagement() {
 
       setDialogOpen(false)
       setCustomQueryData(null)
+      customQueryLatestRef.current = null
       loadProviders()
     } catch (error: any) {
       toast({
@@ -268,7 +270,10 @@ export function ProvidersManagement() {
 
       <Dialog open={dialogOpen} onOpenChange={(open) => {
         setDialogOpen(open)
-        if (!open) setCustomQueryData(null)
+        if (!open) {
+          setCustomQueryData(null)
+          customQueryLatestRef.current = null
+        }
       }}>
         <DialogContent className="sm:max-w-[700px]">
           <DialogHeader>
@@ -285,6 +290,46 @@ export function ProvidersManagement() {
                 value={formData.name}
                 onChange={(e) => setFormData({ ...formData, name: e.target.value })}
                 placeholder="供应商名称"
+              />
+            </div>
+            <div className="grid gap-2">
+              <Label htmlFor="alert_threshold">告警阈值</Label>
+              <Input
+                id="alert_threshold"
+                type="number"
+                step="0.01"
+                value={formData.alert_threshold}
+                onChange={(e) => setFormData({ ...formData, alert_threshold: parseFloat(e.target.value) || 10.0 })}
+                placeholder="10.00"
+              />
+              <p className="text-xs text-muted-foreground">
+                当余额低于此值时发送告警邮件
+              </p>
+            </div>
+            <div className="grid gap-2">
+              <Label htmlFor="price_ratio">兑换比例（元/额度）</Label>
+              <Input
+                id="price_ratio"
+                type="number"
+                step="any"
+                min="0"
+                value={formData.price_ratio}
+                onChange={(e) => {
+                  const val = parseFloat(e.target.value)
+                  setFormData({ ...formData, price_ratio: isNaN(val) ? 0 : val })
+                }}
+                placeholder="1"
+              />
+              <p className="text-xs text-muted-foreground">
+                1 站内额度需要多少人民币（例如：1 额度 = 0.5 元，则填 0.5）
+              </p>
+            </div>
+            <div className="flex items-center justify-between">
+              <Label htmlFor="enabled">启用状态</Label>
+              <Switch
+                id="enabled"
+                checked={formData.enabled}
+                onCheckedChange={(checked) => setFormData({ ...formData, enabled: checked })}
               />
             </div>
             <div className="grid gap-2">
@@ -350,46 +395,6 @@ export function ProvidersManagement() {
                 initialData={customQueryData}
               />
             )}
-            <div className="grid gap-2">
-              <Label htmlFor="alert_threshold">告警阈值</Label>
-              <Input
-                id="alert_threshold"
-                type="number"
-                step="0.01"
-                value={formData.alert_threshold}
-                onChange={(e) => setFormData({ ...formData, alert_threshold: parseFloat(e.target.value) || 10.0 })}
-                placeholder="10.00"
-              />
-              <p className="text-xs text-muted-foreground">
-                当余额低于此值时发送告警邮件
-              </p>
-            </div>
-            <div className="grid gap-2">
-              <Label htmlFor="price_ratio">兑换比例（元/额度）</Label>
-              <Input
-                id="price_ratio"
-                type="number"
-                step="any"
-                min="0"
-                value={formData.price_ratio}
-                onChange={(e) => {
-                  const val = parseFloat(e.target.value)
-                  setFormData({ ...formData, price_ratio: isNaN(val) ? 0 : val })
-                }}
-                placeholder="1"
-              />
-              <p className="text-xs text-muted-foreground">
-                1 站内额度需要多少人民币（例如：1 额度 = 0.5 元，则填 0.5）
-              </p>
-            </div>
-            <div className="flex items-center justify-between">
-              <Label htmlFor="enabled">启用状态</Label>
-              <Switch
-                id="enabled"
-                checked={formData.enabled}
-                onCheckedChange={(checked) => setFormData({ ...formData, enabled: checked })}
-              />
-            </div>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setDialogOpen(false)}>

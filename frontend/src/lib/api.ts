@@ -76,6 +76,7 @@ export const getProviders = () => api.get('/providers')
 export const createProvider = (data: any) => api.post('/providers', data)
 export const updateProvider = (id: number, data: any) => api.put(`/providers/${id}`, data)
 export const deleteProvider = (id: number) => api.delete(`/providers/${id}`)
+export const testProvider = (id: number) => api.post(`/providers/${id}/test`)
 
 // 余额相关
 export const getCurrentBalance = () => api.get('/balance')
@@ -92,12 +93,23 @@ export const getBalanceHistoryRMB = (days?: number, providerId?: number) => {
   if (providerId) params.provider_id = providerId
   return api.get('/balance/history/rmb', { params })
 }
-export const getBalanceConsumptionRMB = (days?: number, providerId?: number) => {
-  const params: any = {}
-  if (days) params.days = days
-  if (providerId) params.provider_id = providerId
-  return api.get('/balance/consumption/rmb', { params })
+export const getBalanceConsumptionRMB = (params?: {
+  days?: number
+  providerId?: number
+  startDate?: string
+  endDate?: string
+}) => {
+  const queryParams: any = {}
+  if (params?.days) queryParams.days = params.days
+  if (params?.providerId) queryParams.provider_id = params.providerId
+  if (params?.startDate) queryParams.start_date = params.startDate
+  if (params?.endDate) queryParams.end_date = params.endDate
+  return api.get('/balance/consumption/rmb', { params: queryParams })
 }
+export const backfillBalanceConsumptionHistoryDay = (data: {
+  provider_id: number
+  date: string
+}) => api.post('/balance/consumption/history/backfill-day', data)
 export const manualCheckBalance = () => api.post('/balance/check')
 
 // SMTP 设置
@@ -165,4 +177,3 @@ export const deleteCustomQuery = (providerId: number) =>
   api.delete(`/providers/${providerId}/custom-query`)
 
 export default api
-

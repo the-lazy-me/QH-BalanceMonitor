@@ -1,10 +1,15 @@
 package router
 
 import (
+	"bytes"
 	"database/sql"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
+
+	"balance-monitor/internal/services"
 
 	_ "github.com/mattn/go-sqlite3"
 	"pgregory.net/rapid"
@@ -25,6 +30,8 @@ func TestPropertyAuthEnforcement(t *testing.T) {
 	}{
 		{"POST", "/api/curl/parse"},
 		{"POST", "/api/custom-query/test"},
+		{"POST", "/api/balance/consumption/history/backfill-day"},
+		{"POST", "/api/providers/1/test"},
 		{"GET", "/api/providers/1/custom-query"},
 		{"PUT", "/api/providers/1/custom-query"},
 		{"DELETE", "/api/providers/1/custom-query"},
@@ -73,6 +80,7 @@ func setupRouterTestDB(t *testing.T) *sql.DB {
 			enabled BOOLEAN DEFAULT 1,
 			alert_threshold REAL DEFAULT 10.0,
 			query_mode TEXT DEFAULT 'default' NOT NULL,
+			price_ratio REAL DEFAULT 1.0 NOT NULL,
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 		);
@@ -94,6 +102,17 @@ func setupRouterTestDB(t *testing.T) *sql.DB {
 			balance REAL NOT NULL,
 			checked_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 			FOREIGN KEY (provider_id) REFERENCES providers(id) ON DELETE CASCADE
+		);
+		CREATE TABLE provider_daily_consumption_history (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			provider_id INTEGER NOT NULL,
+			date TEXT NOT NULL,
+			quota_consumed INTEGER NOT NULL DEFAULT 0,
+			request_count INTEGER NOT NULL DEFAULT 0,
+			token_used INTEGER NOT NULL DEFAULT 0,
+			fetched_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			FOREIGN KEY (provider_id) REFERENCES providers(id) ON DELETE CASCADE,
+			UNIQUE(provider_id, date)
 		);
 		CREATE TABLE smtp_settings (
 			id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -137,4 +156,351 @@ func setupRouterTestDB(t *testing.T) *sql.DB {
 		t.Fatal(err)
 	}
 	return db
+}
+
+func authHeaderForTest(t *testing.T, db *sql.DB) string {
+	t.Helper()
+
+	if err := services.InitializeSystem(db, "admin", "password123"); err != nil && err.Error() != "系统已初始化" {
+		t.Fatalf("initialize system failed: %v", err)
+	}
+
+	token, err := services.Login(db, "admin", "password123")
+	if err != nil {
+		t.Fatalf("login failed: %v", err)
+	}
+
+	return "Bearer " + token
+}
+
+func TestBackfillHistoryRejectsDisabledAndCustomProviders(t *testing.T) {
+	db := setupRouterTestDB(t)
+	defer db.Close()
+
+	router := Setup(db)
+	authHeader := authHeaderForTest(t, db)
+
+	cases := []struct {
+		name      string
+		enabled   bool
+		queryMode string
+	}{
+		{name: "disabled provider", enabled: false, queryMode: "default"},
+		{name: "custom provider", enabled: true, queryMode: "custom"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			result, err := db.Exec(`
+				INSERT INTO providers (name, upstream_url, authorization, new_api_user, enabled, query_mode, price_ratio)
+				VALUES (?, ?, ?, ?, ?, ?, ?)
+			`, tc.name, "https://example.com", "Bearer test", "1", tc.enabled, tc.queryMode, 1.0)
+			if err != nil {
+				t.Fatalf("insert provider failed: %v", err)
+			}
+			providerID, _ := result.LastInsertId()
+
+			body, _ := json.Marshal(map[string]interface{}{
+				"provider_id": providerID,
+				"date":        "2026-03-17",
+			})
+			req := httptest.NewRequest(http.MethodPost, "/api/balance/consumption/history/backfill-day", bytes.NewReader(body))
+			req.Header.Set("Authorization", authHeader)
+			req.Header.Set("Content-Type", "application/json")
+
+			w := httptest.NewRecorder()
+			router.ServeHTTP(w, req)
+
+			if w.Code != http.StatusBadRequest {
+				t.Fatalf("expected 400, got %d with body %s", w.Code, w.Body.String())
+			}
+		})
+	}
+}
+
+func TestGetBalanceConsumptionRMBPrefersExternalHistory(t *testing.T) {
+	db := setupRouterTestDB(t)
+	defer db.Close()
+
+	router := Setup(db)
+	authHeader := authHeaderForTest(t, db)
+	testDate := services.ShanghaiStartDate(1)
+
+	result, err := db.Exec(`
+		INSERT INTO providers (name, upstream_url, authorization, new_api_user, enabled, query_mode, price_ratio)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+	`, "provider-a", "https://example.com", "Bearer test", "1", true, "default", 2.0)
+	if err != nil {
+		t.Fatalf("insert provider failed: %v", err)
+	}
+	providerID, _ := result.LastInsertId()
+
+	_, err = db.Exec(`
+		INSERT INTO provider_daily_consumption_history (provider_id, date, quota_consumed, request_count, token_used)
+		VALUES (?, ?, ?, ?, ?)
+	`, providerID, testDate, 500000, 10, 1000)
+	if err != nil {
+		t.Fatalf("insert external history failed: %v", err)
+	}
+
+	_, err = db.Exec(`
+		INSERT INTO balance_history (provider_id, quota, balance, checked_at)
+		VALUES
+			(?, ?, ?, ?),
+			(?, ?, ?, ?)
+	`,
+		providerID, 0, 100.0, testDate+"T00:00:00Z",
+		providerID, 0, 95.0, testDate+"T12:00:00Z",
+	)
+	if err != nil {
+		t.Fatalf("insert fallback history failed: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/balance/consumption/rmb?days=30", nil)
+	req.Header.Set("Authorization", authHeader)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d with body %s", w.Code, w.Body.String())
+	}
+
+	var payload []struct {
+		ProviderID  int     `json:"provider_id"`
+		Consumption float64 `json:"consumption"`
+		Date        string  `json:"date"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal response failed: %v", err)
+	}
+
+	if len(payload) != 1 {
+		t.Fatalf("expected 1 row, got %d: %s", len(payload), w.Body.String())
+	}
+	if payload[0].ProviderID != int(providerID) || payload[0].Date != testDate {
+		t.Fatalf("unexpected payload row: %+v", payload[0])
+	}
+	if payload[0].Consumption != 2.0 {
+		t.Fatalf("expected external consumption 2.0, got %f", payload[0].Consumption)
+	}
+}
+
+func TestGetBalanceConsumptionRMBFiltersByDateRange(t *testing.T) {
+	db := setupRouterTestDB(t)
+	defer db.Close()
+
+	router := Setup(db)
+	authHeader := authHeaderForTest(t, db)
+
+	result, err := db.Exec(`
+		INSERT INTO providers (name, upstream_url, authorization, new_api_user, enabled, query_mode, price_ratio)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+	`, "provider-a", "https://example.com", "Bearer test", "1", true, "default", 1.0)
+	if err != nil {
+		t.Fatalf("insert provider failed: %v", err)
+	}
+	providerID, _ := result.LastInsertId()
+
+	_, err = db.Exec(`
+		INSERT INTO provider_daily_consumption_history (provider_id, date, quota_consumed, request_count, token_used)
+		VALUES
+			(?, ?, ?, ?, ?),
+			(?, ?, ?, ?, ?),
+			(?, ?, ?, ?, ?)
+	`,
+		providerID, "2026-03-10", 500000, 10, 1000,
+		providerID, "2026-03-11", 600000, 11, 1100,
+		providerID, "2026-03-12", 700000, 12, 1200,
+	)
+	if err != nil {
+		t.Fatalf("insert external history failed: %v", err)
+	}
+
+	req := httptest.NewRequest(
+		http.MethodGet,
+		"/api/balance/consumption/rmb?start_date=2026-03-11&end_date=2026-03-12",
+		nil,
+	)
+	req.Header.Set("Authorization", authHeader)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d with body %s", w.Code, w.Body.String())
+	}
+
+	var payload []struct {
+		Date string `json:"date"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal response failed: %v", err)
+	}
+
+	if len(payload) != 2 {
+		t.Fatalf("expected 2 rows, got %d: %s", len(payload), w.Body.String())
+	}
+	if payload[0].Date != "2026-03-11" || payload[1].Date != "2026-03-12" {
+		t.Fatalf("unexpected payload rows: %+v", payload)
+	}
+}
+
+func TestGetBalanceConsumptionRMBRejectsInvalidDateRange(t *testing.T) {
+	db := setupRouterTestDB(t)
+	defer db.Close()
+
+	router := Setup(db)
+	authHeader := authHeaderForTest(t, db)
+
+	req := httptest.NewRequest(
+		http.MethodGet,
+		"/api/balance/consumption/rmb?start_date=2026-03-12&end_date=2026-03-11",
+		nil,
+	)
+	req.Header.Set("Authorization", authHeader)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d with body %s", w.Code, w.Body.String())
+	}
+}
+
+func TestTestProviderEndpointDefaultMode(t *testing.T) {
+	db := setupRouterTestDB(t)
+	defer db.Close()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/user/self" {
+			http.NotFound(w, r)
+			return
+		}
+
+		if got := r.Header.Get("Authorization"); got != "Bearer test" {
+			t.Fatalf("unexpected authorization header: %s", got)
+		}
+		if got := r.Header.Get("New-API-User"); got != "7" {
+			t.Fatalf("unexpected New-API-User header: %s", got)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"success":true,"message":"ok","data":{"quota":750000}}`))
+	}))
+	defer server.Close()
+
+	result, err := db.Exec(`
+		INSERT INTO providers (name, upstream_url, authorization, new_api_user, enabled, query_mode, price_ratio)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+	`, "default-provider", server.URL, "Bearer test", "7", false, "default", 1.0)
+	if err != nil {
+		t.Fatalf("insert provider failed: %v", err)
+	}
+	providerID, _ := result.LastInsertId()
+
+	router := Setup(db)
+	authHeader := authHeaderForTest(t, db)
+	req := httptest.NewRequest(http.MethodPost, "/api/providers/"+strconv.FormatInt(providerID, 10)+"/test", nil)
+	req.Header.Set("Authorization", authHeader)
+
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d with body %s", w.Code, w.Body.String())
+	}
+
+	var payload struct {
+		Success      bool    `json:"success"`
+		ProviderID   int64   `json:"provider_id"`
+		ProviderName string  `json:"provider_name"`
+		QueryMode    string  `json:"query_mode"`
+		Quota        int64   `json:"quota"`
+		Balance      float64 `json:"balance"`
+		CheckedAt    string  `json:"checked_at"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response failed: %v", err)
+	}
+
+	if !payload.Success {
+		t.Fatalf("expected success response, got %+v", payload)
+	}
+	if payload.ProviderID != providerID || payload.ProviderName != "default-provider" {
+		t.Fatalf("unexpected provider info: %+v", payload)
+	}
+	if payload.QueryMode != "default" || payload.Quota != 750000 || payload.Balance != 1.5 {
+		t.Fatalf("unexpected balance payload: %+v", payload)
+	}
+	if payload.CheckedAt == "" {
+		t.Fatalf("expected checked_at to be set")
+	}
+}
+
+func TestTestProviderEndpointCustomMode(t *testing.T) {
+	db := setupRouterTestDB(t)
+	defer db.Close()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/wallet" {
+			http.NotFound(w, r)
+			return
+		}
+
+		if got := r.Header.Get("X-Token"); got != "abc" {
+			t.Fatalf("unexpected X-Token header: %s", got)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":{"balance":23.5}}`))
+	}))
+	defer server.Close()
+
+	result, err := db.Exec(`
+		INSERT INTO providers (name, upstream_url, authorization, new_api_user, enabled, query_mode, price_ratio)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+	`, "custom-provider", "https://unused.example.com", "Bearer test", "1", true, "custom", 1.0)
+	if err != nil {
+		t.Fatalf("insert provider failed: %v", err)
+	}
+	providerID, _ := result.LastInsertId()
+
+	_, err = db.Exec(`
+		INSERT INTO custom_queries (provider_id, method, url, headers, balance_field_path)
+		VALUES (?, ?, ?, ?, ?)
+	`, providerID, "GET", server.URL+"/wallet", `{"X-Token":"abc"}`, "data.balance")
+	if err != nil {
+		t.Fatalf("insert custom query failed: %v", err)
+	}
+
+	router := Setup(db)
+	authHeader := authHeaderForTest(t, db)
+	req := httptest.NewRequest(http.MethodPost, "/api/providers/"+strconv.FormatInt(providerID, 10)+"/test", nil)
+	req.Header.Set("Authorization", authHeader)
+
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d with body %s", w.Code, w.Body.String())
+	}
+
+	var payload struct {
+		Success   bool    `json:"success"`
+		QueryMode string  `json:"query_mode"`
+		Quota     int64   `json:"quota"`
+		Balance   float64 `json:"balance"`
+		CheckedAt string  `json:"checked_at"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response failed: %v", err)
+	}
+
+	if !payload.Success {
+		t.Fatalf("expected success response, got %+v", payload)
+	}
+	if payload.QueryMode != "custom" || payload.Quota != 0 || payload.Balance != 23.5 {
+		t.Fatalf("unexpected custom payload: %+v", payload)
+	}
+	if payload.CheckedAt == "" {
+		t.Fatalf("expected checked_at to be set")
+	}
 }

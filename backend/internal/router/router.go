@@ -3,8 +3,11 @@ package router
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"balance-monitor/internal/database"
@@ -55,12 +58,14 @@ func Setup(db *sql.DB) *gin.Engine {
 			protected.POST("/providers", createProvider(db))
 			protected.PUT("/providers/:id", updateProvider(db))
 			protected.DELETE("/providers/:id", deleteProvider(db))
+			protected.POST("/providers/:id/test", testProvider(db))
 
 			// 余额相关
 			protected.GET("/balance", getCurrentBalance(db))
 			protected.GET("/balance/history", getBalanceHistory(db))
 			protected.GET("/balance/history/rmb", getBalanceHistoryRMB(db))
 			protected.GET("/balance/consumption/rmb", getBalanceConsumptionRMB(db))
+			protected.POST("/balance/consumption/history/backfill-day", backfillBalanceConsumptionHistoryDay(db))
 			protected.POST("/balance/check", manualCheckBalance(db))
 
 			// SMTP 设置
@@ -153,7 +158,7 @@ func login(db *sql.DB) gin.HandlerFunc {
 		}
 
 		c.JSON(http.StatusOK, gin.H{
-			"token": token,
+			"token":   token,
 			"message": "登录成功",
 		})
 	}
@@ -307,6 +312,51 @@ func deleteProvider(db *sql.DB) gin.HandlerFunc {
 	}
 }
 
+func testProvider(db *sql.DB) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		id, err := strconv.Atoi(c.Param("id"))
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "无效的供应商 ID"})
+			return
+		}
+
+		provider, quota, balance, err := services.TestProviderBalance(db, id)
+		if err != nil {
+			if err.Error() == "供应商不存在" {
+				c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+				return
+			}
+
+			providerName := ""
+			queryMode := ""
+			if provider != nil {
+				providerName = provider.Name
+				queryMode = provider.QueryMode
+			}
+
+			c.JSON(http.StatusOK, gin.H{
+				"success":       false,
+				"provider_id":   id,
+				"provider_name": providerName,
+				"query_mode":    queryMode,
+				"error":         err.Error(),
+				"checked_at":    time.Now().Format(time.RFC3339),
+			})
+			return
+		}
+
+		c.JSON(http.StatusOK, gin.H{
+			"success":       true,
+			"provider_id":   provider.ID,
+			"provider_name": provider.Name,
+			"query_mode":    provider.QueryMode,
+			"quota":         quota,
+			"balance":       balance,
+			"checked_at":    time.Now().Format(time.RFC3339),
+		})
+	}
+}
+
 func getCurrentBalance(db *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		rows, err := db.Query(`
@@ -410,7 +460,7 @@ func getBalanceHistory(db *sql.DB) gin.HandlerFunc {
 
 		// 添加排序和限制
 		query += " ORDER BY bh.checked_at DESC"
-		
+
 		// 只有在没有指定天数时才应用limit限制
 		if days == "" {
 			query += " LIMIT ?"
@@ -503,75 +553,205 @@ func getBalanceHistoryRMB(db *sql.DB) gin.HandlerFunc {
 	}
 }
 
-
 func getBalanceConsumptionRMB(db *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		providerID := c.Query("provider_id")
-		days := c.DefaultQuery("days", "7")
+		startDate := strings.TrimSpace(c.Query("start_date"))
+		endDate := strings.TrimSpace(c.Query("end_date"))
 
-		// 每天每个供应商取最早和最晚的余额，差值为当天消耗
-		query := `
-			SELECT sub.provider_id, sub.provider_name, sub.date,
-				sub.first_balance - sub.last_balance AS consumption
-			FROM (
-				SELECT bh.provider_id, p.name AS provider_name,
-					DATE(bh.checked_at) AS date,
-					-- first_value / last_value over the day window
-					FIRST_VALUE(bh.balance * COALESCE(NULLIF(p.price_ratio, 0), 1.0))
-						OVER (PARTITION BY bh.provider_id, DATE(bh.checked_at) ORDER BY bh.checked_at ASC) AS first_balance,
-					FIRST_VALUE(bh.balance * COALESCE(NULLIF(p.price_ratio, 0), 1.0))
-						OVER (PARTITION BY bh.provider_id, DATE(bh.checked_at) ORDER BY bh.checked_at DESC) AS last_balance,
-					ROW_NUMBER() OVER (PARTITION BY bh.provider_id, DATE(bh.checked_at) ORDER BY bh.checked_at ASC) AS rn
-				FROM balance_history bh
-				JOIN providers p ON bh.provider_id = p.id
-				WHERE bh.checked_at >= datetime('now', '-' || ? || ' days')
-		`
-		args := []interface{}{days}
-
-		if providerID != "" {
-			query += " AND bh.provider_id = ?"
-			args = append(args, providerID)
+		var err error
+		if startDate != "" {
+			startDate, err = normalizeDateQueryParam(startDate, "start_date")
+			if err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+				return
+			}
+		}
+		if endDate != "" {
+			endDate, err = normalizeDateQueryParam(endDate, "end_date")
+			if err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+				return
+			}
+		}
+		if startDate != "" && endDate != "" && startDate > endDate {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "start_date 不能晚于 end_date"})
+			return
 		}
 
-		query += `
-			) sub
-			WHERE sub.rn = 1
-			ORDER BY sub.date ASC, sub.provider_name ASC
-		`
+		if startDate == "" && endDate == "" {
+			days, err := strconv.Atoi(c.DefaultQuery("days", "7"))
+			if err != nil || days <= 0 {
+				days = 7
+			}
+			startDate = services.ShanghaiStartDate(days)
+		}
 
-		rows, err := db.Query(query, args...)
+		type consumptionItem struct {
+			ProviderID   int     `json:"provider_id"`
+			ProviderName string  `json:"provider_name"`
+			Consumption  float64 `json:"consumption"`
+			Date         string  `json:"date"`
+		}
+
+		externalQuery := `
+			SELECT h.provider_id, p.name, h.date,
+				(CAST(h.quota_consumed AS REAL) / 500000.0) * COALESCE(NULLIF(p.price_ratio, 0), 1.0) AS consumption
+			FROM provider_daily_consumption_history h
+			JOIN providers p ON h.provider_id = p.id
+			WHERE 1 = 1
+		`
+		externalArgs := []interface{}{}
+		if startDate != "" {
+			externalQuery += " AND h.date >= ?"
+			externalArgs = append(externalArgs, startDate)
+		}
+		if endDate != "" {
+			externalQuery += " AND h.date <= ?"
+			externalArgs = append(externalArgs, endDate)
+		}
+		if providerID != "" {
+			externalQuery += " AND h.provider_id = ?"
+			externalArgs = append(externalArgs, providerID)
+		}
+		externalQuery += " ORDER BY h.date ASC, p.name ASC"
+
+		rows, err := db.Query(externalQuery, externalArgs...)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
 		defer rows.Close()
 
-		var result []map[string]interface{}
+		var result []consumptionItem
+		existingDays := make(map[string]struct{})
 		for rows.Next() {
-			var pid int
-			var name, date string
-			var consumption float64
-			if err := rows.Scan(&pid, &name, &date, &consumption); err != nil {
+			var item consumptionItem
+			if err := rows.Scan(&item.ProviderID, &item.ProviderName, &item.Date, &item.Consumption); err != nil {
 				continue
 			}
-			// 负值表示充值，不计入消耗
-			if consumption < 0 {
-				consumption = 0
+			if item.Consumption < 0 {
+				item.Consumption = 0
 			}
-			result = append(result, map[string]interface{}{
-				"provider_id":   pid,
-				"provider_name": name,
-				"consumption":   consumption,
-				"date":          date,
-			})
+			existingDays[consumptionKey(item.ProviderID, item.Date)] = struct{}{}
+			result = append(result, item)
+		}
+
+		fallbackQuery := `
+			SELECT sub.provider_id, sub.provider_name, sub.date,
+				sub.first_balance - sub.last_balance AS consumption
+			FROM (
+				SELECT bh.provider_id, p.name AS provider_name,
+					DATE(datetime(bh.checked_at, '+8 hours')) AS date,
+					FIRST_VALUE(bh.balance * COALESCE(NULLIF(p.price_ratio, 0), 1.0))
+						OVER (PARTITION BY bh.provider_id, DATE(datetime(bh.checked_at, '+8 hours')) ORDER BY bh.checked_at ASC) AS first_balance,
+					FIRST_VALUE(bh.balance * COALESCE(NULLIF(p.price_ratio, 0), 1.0))
+						OVER (PARTITION BY bh.provider_id, DATE(datetime(bh.checked_at, '+8 hours')) ORDER BY bh.checked_at DESC) AS last_balance,
+					ROW_NUMBER() OVER (PARTITION BY bh.provider_id, DATE(datetime(bh.checked_at, '+8 hours')) ORDER BY bh.checked_at ASC) AS rn
+				FROM balance_history bh
+				JOIN providers p ON bh.provider_id = p.id
+				WHERE 1 = 1
+		`
+		fallbackArgs := []interface{}{}
+		if startDate != "" {
+			fallbackQuery += " AND DATE(datetime(bh.checked_at, '+8 hours')) >= ?"
+			fallbackArgs = append(fallbackArgs, startDate)
+		}
+		if endDate != "" {
+			fallbackQuery += " AND DATE(datetime(bh.checked_at, '+8 hours')) <= ?"
+			fallbackArgs = append(fallbackArgs, endDate)
+		}
+		if providerID != "" {
+			fallbackQuery += " AND bh.provider_id = ?"
+			fallbackArgs = append(fallbackArgs, providerID)
+		}
+		fallbackQuery += `
+			) sub
+			WHERE sub.rn = 1
+			ORDER BY sub.date ASC, sub.provider_name ASC
+		`
+
+		fallbackRows, err := db.Query(fallbackQuery, fallbackArgs...)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		defer fallbackRows.Close()
+
+		for fallbackRows.Next() {
+			var item consumptionItem
+			if err := fallbackRows.Scan(&item.ProviderID, &item.ProviderName, &item.Date, &item.Consumption); err != nil {
+				continue
+			}
+			if _, exists := existingDays[consumptionKey(item.ProviderID, item.Date)]; exists {
+				continue
+			}
+			if item.Consumption < 0 {
+				item.Consumption = 0
+			}
+			result = append(result, item)
+		}
+
+		sort.Slice(result, func(i, j int) bool {
+			if result[i].Date == result[j].Date {
+				if result[i].ProviderName == result[j].ProviderName {
+					return result[i].ProviderID < result[j].ProviderID
+				}
+				return result[i].ProviderName < result[j].ProviderName
+			}
+			return result[i].Date < result[j].Date
+		})
+
+		c.JSON(http.StatusOK, result)
+	}
+}
+
+func backfillBalanceConsumptionHistoryDay(db *sql.DB) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var req struct {
+			ProviderID int    `json:"provider_id" binding:"required"`
+			Date       string `json:"date" binding:"required"`
+		}
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "provider_id 和 date 不能为空"})
+			return
+		}
+
+		result, err := services.BackfillProviderDailyConsumptionHistory(db, req.ProviderID, req.Date)
+		if err != nil {
+			statusCode := http.StatusInternalServerError
+			switch {
+			case strings.Contains(err.Error(), "无效的日期格式"),
+				strings.Contains(err.Error(), "供应商不存在"),
+				strings.Contains(err.Error(), "供应商未启用"),
+				strings.Contains(err.Error(), "仅支持默认模式供应商"):
+				statusCode = http.StatusBadRequest
+			case strings.Contains(err.Error(), "请求历史数据失败"),
+				strings.Contains(err.Error(), "历史数据请求失败"),
+				strings.Contains(err.Error(), "解析历史数据响应失败"),
+				strings.Contains(err.Error(), "读取历史数据响应失败"):
+				statusCode = http.StatusBadGateway
+			}
+			c.JSON(statusCode, gin.H{"error": err.Error()})
+			return
 		}
 
 		c.JSON(http.StatusOK, result)
 	}
 }
 
+func consumptionKey(providerID int, date string) string {
+	return strconv.Itoa(providerID) + ":" + date
+}
 
+func normalizeDateQueryParam(value string, fieldName string) (string, error) {
+	parsed, err := time.Parse("2006-01-02", strings.TrimSpace(value))
+	if err != nil {
+		return "", fmt.Errorf("%s 格式无效，应为 YYYY-MM-DD", fieldName)
+	}
 
+	return parsed.Format("2006-01-02"), nil
+}
 
 func manualCheckBalance(db *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -649,12 +829,12 @@ func testSMTP(db *sql.DB) gin.HandlerFunc {
 func getMonitorSettings(db *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var settings database.MonitorSettings
-		
+
 		err := db.QueryRow(`
 			SELECT id, cron_expression, alert_count
 			FROM monitor_settings WHERE id = 1
 		`).Scan(&settings.ID, &settings.CronExpression, &settings.AlertCount)
-		
+
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
@@ -690,7 +870,7 @@ func updateMonitorSettings(db *sql.DB) gin.HandlerFunc {
 func getNotifications(db *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		limit := c.DefaultQuery("limit", "50")
-		
+
 		rows, err := db.Query(`
 			SELECT n.id, n.provider_id, p.name, n.balance, n.message, n.sent_at
 			FROM notifications n
@@ -698,7 +878,7 @@ func getNotifications(db *sql.DB) gin.HandlerFunc {
 			ORDER BY n.sent_at DESC
 			LIMIT ?
 		`, limit)
-		
+
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
@@ -729,7 +909,6 @@ func getNotifications(db *sql.DB) gin.HandlerFunc {
 		c.JSON(http.StatusOK, notifications)
 	}
 }
-
 
 // 记账相关 handler
 
@@ -867,7 +1046,6 @@ func getMonthlyCostStats(db *sql.DB) gin.HandlerFunc {
 		c.JSON(http.StatusOK, summaries)
 	}
 }
-
 
 // parseCurlHandler 解析 curl 命令
 func parseCurlHandler() gin.HandlerFunc {

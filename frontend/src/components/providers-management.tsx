@@ -7,10 +7,10 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import { getProviders, createProvider, updateProvider, deleteProvider, saveCustomQuery, getCustomQuery } from '@/lib/api'
+import { getProviders, createProvider, updateProvider, deleteProvider, saveCustomQuery, getCustomQuery, testProvider } from '@/lib/api'
 import { CustomQueryForm, CustomQueryData } from '@/components/custom-query-form'
 import { useToast } from '@/hooks/use-toast'
-import { Plus, Pencil, Trash2, Server } from 'lucide-react'
+import { Loader2, Pencil, Play, Plus, Server, Trash2 } from 'lucide-react'
 
 interface Provider {
   id: number
@@ -26,8 +26,21 @@ interface Provider {
   updated_at: string
 }
 
+interface ProviderTestResult {
+  success: boolean
+  provider_id: number
+  provider_name: string
+  query_mode: string
+  quota?: number
+  balance?: number
+  checked_at?: string
+  error?: string
+}
+
 export function ProvidersManagement() {
   const [providers, setProviders] = useState<Provider[]>([])
+  const [testingProviderId, setTestingProviderId] = useState<number | null>(null)
+  const [testResults, setTestResults] = useState<Record<number, ProviderTestResult>>({})
   const [dialogOpen, setDialogOpen] = useState(false)
   const [editingProvider, setEditingProvider] = useState<Provider | null>(null)
   const [formData, setFormData] = useState({
@@ -160,6 +173,11 @@ export function ProvidersManagement() {
 
     try {
       await deleteProvider(id)
+      setTestResults((prev) => {
+        const next = { ...prev }
+        delete next[id]
+        return next
+      })
       toast({
         title: '删除成功',
         description: '供应商已删除',
@@ -171,6 +189,55 @@ export function ProvidersManagement() {
         title: '删除失败',
         description: error.message || '无法删除供应商',
       })
+    }
+  }
+
+  const handleTestProvider = async (provider: Provider) => {
+    setTestingProviderId(provider.id)
+
+    try {
+      const response = await testProvider(provider.id)
+      const result = response.data as ProviderTestResult
+
+      setTestResults((prev) => ({
+        ...prev,
+        [provider.id]: result,
+      }))
+
+      if (result.success) {
+        toast({
+          title: '测试成功',
+          description: `${provider.name} 当前余额 ${result.balance ?? 0}`,
+        })
+      } else {
+        toast({
+          variant: 'destructive',
+          title: '测试失败',
+          description: result.error || `${provider.name} 测试失败`,
+        })
+      }
+    } catch (error: any) {
+      const message = error.response?.data?.error || error.message || '无法测试供应商'
+
+      setTestResults((prev) => ({
+        ...prev,
+        [provider.id]: {
+          success: false,
+          provider_id: provider.id,
+          provider_name: provider.name,
+          query_mode: provider.query_mode,
+          checked_at: new Date().toISOString(),
+          error: message,
+        },
+      }))
+
+      toast({
+        variant: 'destructive',
+        title: '测试失败',
+        description: message,
+      })
+    } finally {
+      setTestingProviderId(null)
     }
   }
 
@@ -188,71 +255,113 @@ export function ProvidersManagement() {
       </div>
 
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-        {providers.map((provider) => (
-          <Card key={provider.id}>
-            <CardHeader>
-              <div className="flex items-start justify-between">
-                <div className="flex items-center gap-2">
-                  <Server className="h-5 w-5 text-primary" />
-                  <CardTitle className="text-lg">{provider.name}</CardTitle>
-                </div>
-                <div className="flex items-center gap-1">
-                  <div className={`px-2 py-1 rounded text-xs font-medium ${
-                    provider.query_mode === 'custom'
-                      ? 'bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200'
-                      : 'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400'
-                  }`}>
-                    {provider.query_mode === 'custom' ? '自定义' : '默认'}
+        {providers.map((provider) => {
+          const testResult = testResults[provider.id]
+          const testedAt = testResult?.checked_at
+            ? new Date(testResult.checked_at).toLocaleString('zh-CN')
+            : null
+
+          return (
+            <Card key={provider.id}>
+              <CardHeader>
+                <div className="flex items-start justify-between">
+                  <div className="flex items-center gap-2">
+                    <Server className="h-5 w-5 text-primary" />
+                    <CardTitle className="text-lg">{provider.name}</CardTitle>
                   </div>
-                  <div className={`px-2 py-1 rounded text-xs font-medium ${
-                    provider.enabled
-                      ? 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200'
-                      : 'bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-200'
-                  }`}>
-                    {provider.enabled ? '启用' : '禁用'}
+                  <div className="flex items-center gap-1">
+                    <div className={`px-2 py-1 rounded text-xs font-medium ${
+                      provider.query_mode === 'custom'
+                        ? 'bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200'
+                        : 'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400'
+                    }`}>
+                      {provider.query_mode === 'custom' ? '自定义' : '默认'}
+                    </div>
+                    <div className={`px-2 py-1 rounded text-xs font-medium ${
+                      provider.enabled
+                        ? 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200'
+                        : 'bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-200'
+                    }`}>
+                      {provider.enabled ? '启用' : '禁用'}
+                    </div>
                   </div>
                 </div>
-              </div>
-              <CardDescription className="line-clamp-1">{provider.upstream_url}</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <div className="space-y-2 text-sm">
-                <div>
-                  <span className="text-muted-foreground">Authorization:</span>
-                  <div className="font-mono text-xs mt-1 truncate">{provider.authorization}</div>
+                <CardDescription className="line-clamp-1">{provider.upstream_url}</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-2 text-sm">
+                  <div>
+                    <span className="text-muted-foreground">Authorization:</span>
+                    <div className="font-mono text-xs mt-1 truncate">{provider.authorization}</div>
+                  </div>
+                  <div>
+                    <span className="text-muted-foreground">New-API-User:</span>
+                    <span className="ml-2 font-mono">{provider.new_api_user}</span>
+                  </div>
+                  <div>
+                    <span className="text-muted-foreground">兑换比例:</span>
+                    <span className="ml-2 font-mono">{provider.price_ratio ?? 1} 元/额度</span>
+                  </div>
                 </div>
-                <div>
-                  <span className="text-muted-foreground">New-API-User:</span>
-                  <span className="ml-2 font-mono">{provider.new_api_user}</span>
+                <div className="grid grid-cols-3 gap-2 mt-4">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => handleTestProvider(provider)}
+                    disabled={testingProviderId === provider.id}
+                  >
+                    {testingProviderId === provider.id ? (
+                      <Loader2 className="mr-2 h-3 w-3 animate-spin" />
+                    ) : (
+                      <Play className="mr-2 h-3 w-3" />
+                    )}
+                    测试
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => handleOpenDialog(provider)}
+                  >
+                    <Pencil className="mr-2 h-3 w-3" />
+                    编辑
+                  </Button>
+                  <Button
+                    variant="destructive"
+                    size="sm"
+                    onClick={() => handleDelete(provider.id)}
+                  >
+                    <Trash2 className="mr-2 h-3 w-3" />
+                    删除
+                  </Button>
                 </div>
-                <div>
-                  <span className="text-muted-foreground">兑换比例:</span>
-                  <span className="ml-2 font-mono">{provider.price_ratio ?? 1} 元/额度</span>
-                </div>
-              </div>
-              <div className="flex gap-2 mt-4">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="flex-1"
-                  onClick={() => handleOpenDialog(provider)}
-                >
-                  <Pencil className="mr-2 h-3 w-3" />
-                  编辑
-                </Button>
-                <Button
-                  variant="destructive"
-                  size="sm"
-                  className="flex-1"
-                  onClick={() => handleDelete(provider.id)}
-                >
-                  <Trash2 className="mr-2 h-3 w-3" />
-                  删除
-                </Button>
-              </div>
-            </CardContent>
-          </Card>
-        ))}
+                {testResult && (
+                  <div
+                    className={`mt-3 rounded-md border px-3 py-2 text-sm ${
+                      testResult.success
+                        ? 'border-green-200 bg-green-50 text-green-700 dark:border-green-800 dark:bg-green-950 dark:text-green-300'
+                        : 'border-red-200 bg-red-50 text-red-700 dark:border-red-800 dark:bg-red-950 dark:text-red-300'
+                    }`}
+                  >
+                    <div className="font-medium">{testResult.success ? '测试成功' : '测试失败'}</div>
+                    {testResult.success ? (
+                      <div className="mt-1 space-y-1">
+                        <div>余额：<span className="font-mono">{testResult.balance ?? 0}</span></div>
+                        {provider.query_mode === 'default' && (
+                          <div>Quota：<span className="font-mono">{testResult.quota ?? 0}</span></div>
+                        )}
+                      </div>
+                    ) : (
+                      <div className="mt-1 break-all">{testResult.error}</div>
+                    )}
+                    {testedAt && (
+                      <div className="mt-1 text-xs opacity-80">测试时间：{testedAt}</div>
+                    )}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          )
+        })}
       </div>
 
       {providers.length === 0 && (
@@ -409,4 +518,3 @@ export function ProvidersManagement() {
     </div>
   )
 }
-

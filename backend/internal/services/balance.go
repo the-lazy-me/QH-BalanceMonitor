@@ -13,8 +13,8 @@ import (
 )
 
 const (
-	maxRetries     = 3              // 最大重试次数
-	retryDelay     = 2 * time.Second // 重试延迟时间
+	maxRetries = 3               // 最大重试次数
+	retryDelay = 2 * time.Second // 重试延迟时间
 )
 
 // checkResult 存储单个供应商的检查结果
@@ -31,6 +31,38 @@ func maskString(s string) string {
 		return "****"
 	}
 	return s[:5] + "****" + s[len(s)-5:]
+}
+
+func TestProviderBalance(db *sql.DB, providerID int) (*database.Provider, int64, float64, error) {
+	var provider database.Provider
+	err := db.QueryRow(`
+		SELECT id, name, upstream_url, authorization, new_api_user, enabled, alert_threshold, query_mode, price_ratio
+		FROM providers
+		WHERE id = ?
+	`, providerID).Scan(
+		&provider.ID,
+		&provider.Name,
+		&provider.UpstreamURL,
+		&provider.Authorization,
+		&provider.NewAPIUser,
+		&provider.Enabled,
+		&provider.AlertThreshold,
+		&provider.QueryMode,
+		&provider.PriceRatio,
+	)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, 0, 0, fmt.Errorf("供应商不存在")
+		}
+		return nil, 0, 0, fmt.Errorf("查询供应商失败: %v", err)
+	}
+
+	quota, balance, err := fetchBalanceWithRetry(db, &provider)
+	if err != nil {
+		return &provider, 0, 0, err
+	}
+
+	return &provider, quota, balance, nil
 }
 
 func CheckAllProviders(db *sql.DB) ([]models.BalanceInfo, error) {
@@ -57,7 +89,7 @@ func CheckAllProviders(db *sql.DB) ([]models.BalanceInfo, error) {
 
 	// fmt.Printf("\n开始检查 %d 个供应商的余额...\n", len(providers))
 	// fmt.Println("====================================================")
-	
+
 	var results []models.BalanceInfo
 	var errors []string
 
@@ -66,7 +98,7 @@ func CheckAllProviders(db *sql.DB) ([]models.BalanceInfo, error) {
 
 	for _, provider := range providers {
 		// fmt.Printf("\n正在检查供应商: %s (ID: %d, URL: %s)\n", provider.Name, provider.ID, provider.UpstreamURL)
-		
+
 		// 带重试机制的余额获取
 		quota, balance, err := fetchBalanceWithRetry(db, &provider)
 		checkResults = append(checkResults, checkResult{
@@ -75,7 +107,7 @@ func CheckAllProviders(db *sql.DB) ([]models.BalanceInfo, error) {
 			balance:  balance,
 			err:      err,
 		})
-		
+
 		if err != nil {
 			errMsg := fmt.Sprintf("检查供应商 %s 失败: %v", provider.Name, err)
 			// fmt.Printf("✗ %s\n", errMsg)
@@ -127,10 +159,10 @@ func CheckAllProviders(db *sql.DB) ([]models.BalanceInfo, error) {
 // fetchBalanceWithRetry 带重试机制的余额获取函数
 func fetchBalanceWithRetry(db *sql.DB, provider *database.Provider) (int64, float64, error) {
 	var lastErr error
-	
+
 	for attempt := 1; attempt <= maxRetries; attempt++ {
 		quota, balance, err := fetchBalance(db, provider)
-		
+
 		if err == nil {
 			// 成功获取余额
 			if attempt > 1 {
@@ -138,18 +170,18 @@ func fetchBalanceWithRetry(db *sql.DB, provider *database.Provider) (int64, floa
 			}
 			return quota, balance, nil
 		}
-		
+
 		// 记录错误
 		lastErr = err
-		
+
 		// 如果不是最后一次尝试，等待后重试
 		if attempt < maxRetries {
-			fmt.Printf("供应商 %s 第 %d 次尝试失败: %v，等待 %v 后重试...\n", 
+			fmt.Printf("供应商 %s 第 %d 次尝试失败: %v，等待 %v 后重试...\n",
 				provider.Name, attempt, err, retryDelay)
 			time.Sleep(retryDelay)
 		}
 	}
-	
+
 	// 所有重试都失败
 	return 0, 0, fmt.Errorf("尝试 %d 次后仍然失败，最后错误: %v", maxRetries, lastErr)
 }
@@ -183,7 +215,7 @@ func fetchBalance(db *sql.DB, provider *database.Provider) (int64, float64, erro
 	// 默认查询逻辑：New API 查询
 	requestURL := provider.UpstreamURL + "/api/user/self"
 	// fmt.Printf("  → 请求 URL: %s\n", requestURL)
-	
+
 	client := &http.Client{Timeout: 30 * time.Second}
 	req, err := http.NewRequest("GET", requestURL, nil)
 	if err != nil {
@@ -268,4 +300,3 @@ func saveBalanceResults(db *sql.DB, results []checkResult) error {
 	// fmt.Printf("✓ 已成功保存 %d 条记录到数据库\n", successCount)
 	return nil
 }
-

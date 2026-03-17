@@ -16,7 +16,7 @@ func Init(dbPath string) (*sql.DB, error) {
 	// _cache_size=1000: 缓存大小
 	// _foreign_keys=ON: 启用外键约束
 	dsn := dbPath + "?_journal_mode=WAL&_busy_timeout=5000&_synchronous=NORMAL&_cache_size=1000&_foreign_keys=ON"
-	
+
 	db, err := sql.Open("sqlite3", dsn)
 	if err != nil {
 		return nil, err
@@ -66,6 +66,18 @@ func createTables(db *sql.DB) error {
 		balance REAL NOT NULL,
 		checked_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 		FOREIGN KEY (provider_id) REFERENCES providers(id) ON DELETE CASCADE
+	);
+
+	CREATE TABLE IF NOT EXISTS provider_daily_consumption_history (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		provider_id INTEGER NOT NULL,
+		date TEXT NOT NULL,
+		quota_consumed INTEGER NOT NULL DEFAULT 0,
+		request_count INTEGER NOT NULL DEFAULT 0,
+		token_used INTEGER NOT NULL DEFAULT 0,
+		fetched_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+		FOREIGN KEY (provider_id) REFERENCES providers(id) ON DELETE CASCADE,
+		UNIQUE(provider_id, date)
 	);
 
 	CREATE TABLE IF NOT EXISTS smtp_settings (
@@ -121,6 +133,7 @@ func createTables(db *sql.DB) error {
 
 	CREATE INDEX IF NOT EXISTS idx_accounting_provider ON accounting_records(provider_id);
 	CREATE INDEX IF NOT EXISTS idx_accounting_date ON accounting_records(date);
+	CREATE INDEX IF NOT EXISTS idx_daily_consumption_provider_date ON provider_daily_consumption_history(provider_id, date);
 
 	-- 插入默认 SMTP 设置
 	INSERT OR IGNORE INTO smtp_settings (id, enabled) VALUES (1, 0);
@@ -176,6 +189,16 @@ type BalanceHistory struct {
 	CheckedAt  time.Time `json:"checked_at"`
 }
 
+type ProviderDailyConsumptionHistory struct {
+	ID            int       `json:"id"`
+	ProviderID    int       `json:"provider_id"`
+	Date          string    `json:"date"`
+	QuotaConsumed int64     `json:"quota_consumed"`
+	RequestCount  int64     `json:"request_count"`
+	TokenUsed     int64     `json:"token_used"`
+	FetchedAt     time.Time `json:"fetched_at"`
+}
+
 type SMTPSettings struct {
 	ID           int    `json:"id"`
 	Enabled      bool   `json:"enabled"`
@@ -219,4 +242,3 @@ type CustomQuery struct {
 	CreatedAt        time.Time `json:"created_at"`
 	UpdatedAt        time.Time `json:"updated_at"`
 }
-

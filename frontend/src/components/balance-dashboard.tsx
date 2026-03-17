@@ -393,9 +393,9 @@ export function BalanceDashboard() {
         </Card>
       )}
 
-      <RMBBalanceChart />
-
       <RMBConsumptionChart />
+
+      <RMBBalanceChart />
 
       <Card>
         <CardHeader>
@@ -588,4 +588,3 @@ export function BalanceDashboard() {
     </div>
   )
 }
-

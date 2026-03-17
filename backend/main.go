@@ -1,11 +1,12 @@
 package main
 
 import (
-	"log"
 	"balance-monitor/internal/config"
 	"balance-monitor/internal/database"
 	"balance-monitor/internal/router"
 	"balance-monitor/internal/scheduler"
+	"balance-monitor/internal/services"
+	"log"
 )
 
 func main() {
@@ -19,6 +20,10 @@ func main() {
 	}
 	defer db.Close()
 
+	if err := services.MarkInterruptedConsumptionBackfillJobs(db); err != nil {
+		log.Fatalf("历史回补任务中断修复失败: %v", err)
+	}
+
 	// 启动定时任务
 	scheduler.Start(db)
 
@@ -29,4 +34,3 @@ func main() {
 		log.Fatalf("服务器启动失败: %v", err)
 	}
 }
-

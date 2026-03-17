@@ -80,6 +80,33 @@ func createTables(db *sql.DB) error {
 		UNIQUE(provider_id, date)
 	);
 
+	CREATE TABLE IF NOT EXISTS consumption_backfill_jobs (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		status TEXT NOT NULL,
+		days_limit INTEGER NOT NULL,
+		created_by INTEGER NOT NULL,
+		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+		started_at DATETIME,
+		finished_at DATETIME,
+		FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE RESTRICT
+	);
+
+	CREATE TABLE IF NOT EXISTS consumption_backfill_job_providers (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		job_id INTEGER NOT NULL,
+		provider_id INTEGER NOT NULL,
+		status TEXT NOT NULL,
+		current_date TEXT,
+		inserted_days INTEGER NOT NULL DEFAULT 0,
+		skipped_days INTEGER NOT NULL DEFAULT 0,
+		error_message TEXT,
+		started_at DATETIME,
+		finished_at DATETIME,
+		FOREIGN KEY (job_id) REFERENCES consumption_backfill_jobs(id) ON DELETE CASCADE,
+		FOREIGN KEY (provider_id) REFERENCES providers(id) ON DELETE CASCADE,
+		UNIQUE(job_id, provider_id)
+	);
+
 	CREATE TABLE IF NOT EXISTS smtp_settings (
 		id INTEGER PRIMARY KEY CHECK (id = 1),
 		enabled BOOLEAN DEFAULT 0,
@@ -134,6 +161,8 @@ func createTables(db *sql.DB) error {
 	CREATE INDEX IF NOT EXISTS idx_accounting_provider ON accounting_records(provider_id);
 	CREATE INDEX IF NOT EXISTS idx_accounting_date ON accounting_records(date);
 	CREATE INDEX IF NOT EXISTS idx_daily_consumption_provider_date ON provider_daily_consumption_history(provider_id, date);
+	CREATE INDEX IF NOT EXISTS idx_consumption_backfill_jobs_status ON consumption_backfill_jobs(status, created_at);
+	CREATE INDEX IF NOT EXISTS idx_consumption_backfill_job_providers_job_id ON consumption_backfill_job_providers(job_id, status);
 
 	-- 插入默认 SMTP 设置
 	INSERT OR IGNORE INTO smtp_settings (id, enabled) VALUES (1, 0);

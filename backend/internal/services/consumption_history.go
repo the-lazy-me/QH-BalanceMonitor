@@ -56,50 +56,7 @@ func BackfillProviderDailyConsumptionHistory(db *sql.DB, providerID int, date st
 		return nil, err
 	}
 
-	normalizedDate, err := normalizeShanghaiDate(date)
-	if err != nil {
-		return nil, err
-	}
-
-	existing, found, err := getExistingDailyConsumptionRecord(db, providerID, normalizedDate)
-	if err != nil {
-		return nil, fmt.Errorf("查询历史消耗记录失败: %w", err)
-	}
-	if found {
-		return &DailyConsumptionBackfillResult{
-			ProviderID:    provider.ID,
-			Date:          normalizedDate,
-			Status:        "skipped",
-			QuotaConsumed: existing.QuotaConsumed,
-			RequestCount:  existing.RequestCount,
-			TokenUsed:     existing.TokenUsed,
-			RMBConsumed:   quotaToRMB(existing.QuotaConsumed, provider.PriceRatio),
-		}, nil
-	}
-
-	quotaConsumed, requestCount, tokenUsed, err := fetchDailyConsumptionFromUpstream(provider, normalizedDate)
-	if err != nil {
-		return nil, err
-	}
-
-	_, err = db.Exec(`
-		INSERT INTO provider_daily_consumption_history
-			(provider_id, date, quota_consumed, request_count, token_used, fetched_at)
-		VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-	`, provider.ID, normalizedDate, quotaConsumed, requestCount, tokenUsed)
-	if err != nil {
-		return nil, fmt.Errorf("保存历史消耗记录失败: %w", err)
-	}
-
-	return &DailyConsumptionBackfillResult{
-		ProviderID:    provider.ID,
-		Date:          normalizedDate,
-		Status:        "inserted",
-		QuotaConsumed: quotaConsumed,
-		RequestCount:  requestCount,
-		TokenUsed:     tokenUsed,
-		RMBConsumed:   quotaToRMB(quotaConsumed, provider.PriceRatio),
-	}, nil
+	return backfillProviderDailyConsumptionHistory(db, provider, date)
 }
 
 func ShanghaiStartDate(days int) string {
@@ -164,6 +121,37 @@ func getExistingDailyConsumptionRecord(db *sql.DB, providerID int, date string) 
 	}
 
 	return &record, true, nil
+}
+
+func backfillProviderDailyConsumptionHistory(db *sql.DB, provider *database.Provider, date string) (*DailyConsumptionBackfillResult, error) {
+	normalizedDate, err := normalizeShanghaiDate(date)
+	if err != nil {
+		return nil, err
+	}
+
+	existing, found, err := getExistingDailyConsumptionRecord(db, provider.ID, normalizedDate)
+	if err != nil {
+		return nil, fmt.Errorf("查询历史消耗记录失败: %w", err)
+	}
+	if found {
+		return buildDailyConsumptionBackfillResult(provider, normalizedDate, "skipped", existing.QuotaConsumed, existing.RequestCount, existing.TokenUsed), nil
+	}
+
+	quotaConsumed, requestCount, tokenUsed, err := fetchDailyConsumptionFromUpstream(provider, normalizedDate)
+	if err != nil {
+		return nil, err
+	}
+
+	_, err = db.Exec(`
+		INSERT INTO provider_daily_consumption_history
+			(provider_id, date, quota_consumed, request_count, token_used, fetched_at)
+		VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+	`, provider.ID, normalizedDate, quotaConsumed, requestCount, tokenUsed)
+	if err != nil {
+		return nil, fmt.Errorf("保存历史消耗记录失败: %w", err)
+	}
+
+	return buildDailyConsumptionBackfillResult(provider, normalizedDate, "inserted", quotaConsumed, requestCount, tokenUsed), nil
 }
 
 func fetchDailyConsumptionFromUpstream(provider *database.Provider, date string) (int64, int64, int64, error) {
@@ -246,4 +234,16 @@ func quotaToRMB(quotaConsumed int64, priceRatio float64) float64 {
 		priceRatio = 1.0
 	}
 	return (float64(quotaConsumed) / quotaPerBalanceUnit) * priceRatio
+}
+
+func buildDailyConsumptionBackfillResult(provider *database.Provider, date, status string, quotaConsumed, requestCount, tokenUsed int64) *DailyConsumptionBackfillResult {
+	return &DailyConsumptionBackfillResult{
+		ProviderID:    provider.ID,
+		Date:          date,
+		Status:        status,
+		QuotaConsumed: quotaConsumed,
+		RequestCount:  requestCount,
+		TokenUsed:     tokenUsed,
+		RMBConsumed:   quotaToRMB(quotaConsumed, provider.PriceRatio),
+	}
 }

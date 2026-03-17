@@ -112,8 +112,17 @@ func setupConsumptionHistoryTestDB(t *testing.T) *sql.DB {
 	if err != nil {
 		t.Fatal(err)
 	}
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
 
 	_, err = db.Exec(`
+		CREATE TABLE users (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			username TEXT NOT NULL UNIQUE,
+			password_hash TEXT NOT NULL,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		);
 		CREATE TABLE providers (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			name TEXT NOT NULL,
@@ -138,6 +147,31 @@ func setupConsumptionHistoryTestDB(t *testing.T) *sql.DB {
 			FOREIGN KEY (provider_id) REFERENCES providers(id) ON DELETE CASCADE,
 			UNIQUE(provider_id, date)
 		);
+		CREATE TABLE consumption_backfill_jobs (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			status TEXT NOT NULL,
+			days_limit INTEGER NOT NULL,
+			created_by INTEGER NOT NULL,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			started_at DATETIME,
+			finished_at DATETIME,
+			FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE RESTRICT
+		);
+		CREATE TABLE consumption_backfill_job_providers (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			job_id INTEGER NOT NULL,
+			provider_id INTEGER NOT NULL,
+			status TEXT NOT NULL,
+			current_date TEXT,
+			inserted_days INTEGER NOT NULL DEFAULT 0,
+			skipped_days INTEGER NOT NULL DEFAULT 0,
+			error_message TEXT,
+			started_at DATETIME,
+			finished_at DATETIME,
+			FOREIGN KEY (job_id) REFERENCES consumption_backfill_jobs(id) ON DELETE CASCADE,
+			FOREIGN KEY (provider_id) REFERENCES providers(id) ON DELETE CASCADE,
+			UNIQUE(job_id, provider_id)
+		);
 	`)
 	if err != nil {
 		t.Fatal(err)
@@ -147,12 +181,16 @@ func setupConsumptionHistoryTestDB(t *testing.T) *sql.DB {
 }
 
 func insertBackfillProvider(t *testing.T, db *sql.DB, name, upstreamURL string, enabled bool, queryMode string, priceRatio float64) int {
+	return insertBackfillProviderWithUserID(t, db, name, upstreamURL, "1", enabled, queryMode, priceRatio)
+}
+
+func insertBackfillProviderWithUserID(t *testing.T, db *sql.DB, name, upstreamURL, newAPIUser string, enabled bool, queryMode string, priceRatio float64) int {
 	t.Helper()
 
 	result, err := db.Exec(`
 		INSERT INTO providers (name, upstream_url, authorization, new_api_user, enabled, query_mode, price_ratio)
 		VALUES (?, ?, ?, ?, ?, ?, ?)
-	`, name, upstreamURL, "Bearer test", "1", enabled, queryMode, priceRatio)
+	`, name, upstreamURL, "Bearer test", newAPIUser, enabled, queryMode, priceRatio)
 	if err != nil {
 		t.Fatalf("insert provider failed: %v", err)
 	}
@@ -163,4 +201,23 @@ func insertBackfillProvider(t *testing.T, db *sql.DB, name, upstreamURL string, 
 	}
 
 	return int(providerID)
+}
+
+func insertBackfillUser(t *testing.T, db *sql.DB, username string) int {
+	t.Helper()
+
+	result, err := db.Exec(`
+		INSERT INTO users (username, password_hash)
+		VALUES (?, ?)
+	`, username, "hashed-password")
+	if err != nil {
+		t.Fatalf("insert user failed: %v", err)
+	}
+
+	userID, err := result.LastInsertId()
+	if err != nil {
+		t.Fatalf("get user id failed: %v", err)
+	}
+
+	return int(userID)
 }

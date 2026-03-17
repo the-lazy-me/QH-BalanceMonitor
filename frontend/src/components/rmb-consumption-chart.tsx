@@ -1,11 +1,18 @@
 'use client'
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { DateRangeSelector } from '@/components/date-range-selector'
-import { backfillBalanceConsumptionHistoryDay, getBalanceConsumptionRMB, getProviders } from '@/lib/api'
+import {
+  cancelConsumptionBackfillJob,
+  createConsumptionBackfillJob,
+  getActiveConsumptionBackfillJob,
+  getBalanceConsumptionRMB,
+  getConsumptionBackfillJob,
+  getProviders,
+} from '@/lib/api'
 import { DateRangeValue, formatChartDate, formatDateRangeLabel, formatLongDate, getPresetDateRange } from '@/lib/date-range'
 import { useToast } from '@/hooks/use-toast'
 import { formatRMB } from '@/lib/utils'
@@ -29,30 +36,101 @@ interface ProviderItem {
   query_mode: string
 }
 
-interface BackfillProgress {
-  currentProviderName: string
-  currentDate: string
-  inserted: number
-  skipped: number
-  failed: number
-  status: 'idle' | 'running' | 'stopped' | 'completed'
-  logs: string[]
+interface BackfillJobProvider {
+  provider_id: number
+  provider_name: string
+  status: string
+  current_date: string | null
+  inserted_days: number
+  skipped_days: number
+  error_message: string | null
+  started_at: string | null
+  finished_at: string | null
+}
+
+interface BackfillJob {
+  job_id: number
+  status: string
+  days_limit: number
+  created_by: number
+  created_at: string
+  started_at: string | null
+  finished_at: string | null
+  total_providers: number
+  pending_providers: number
+  running_providers: number
+  completed_providers: number
+  failed_providers: number
+  cancelled_providers: number
+  interrupted_providers: number
+  inserted_days: number
+  skipped_days: number
+  providers: BackfillJobProvider[]
 }
 
 type ViewMode = 'total' | 'individual'
 
 const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#14b8a6', '#f97316']
-const MAX_BACKFILL_DAYS = 365
 const DEFAULT_RANGE_DAYS = 7
 
-const initialBackfillProgress: BackfillProgress = {
-  currentProviderName: '',
-  currentDate: '',
-  inserted: 0,
-  skipped: 0,
-  failed: 0,
-  status: 'idle',
-  logs: [],
+function isActiveBackfillJob(status: string | null | undefined) {
+  return status === 'pending' || status === 'running' || status === 'cancelling'
+}
+
+function getJobStatusLabel(status: string | null | undefined) {
+  switch (status) {
+    case 'pending':
+      return '排队中'
+    case 'running':
+      return '运行中'
+    case 'cancelling':
+      return '停止中'
+    case 'cancelled':
+      return '已取消'
+    case 'completed':
+      return '已完成'
+    case 'completed_with_errors':
+      return '部分失败'
+    case 'interrupted':
+      return '已中断'
+    default:
+      return '未知状态'
+  }
+}
+
+function getProviderStatusLabel(status: string | null | undefined) {
+  switch (status) {
+    case 'pending':
+      return '等待中'
+    case 'running':
+      return '运行中'
+    case 'completed':
+      return '已完成'
+    case 'failed':
+      return '失败'
+    case 'cancelled':
+      return '已取消'
+    case 'interrupted':
+      return '已中断'
+    default:
+      return '未知状态'
+  }
+}
+
+function getProviderStatusClassName(status: string | null | undefined) {
+  switch (status) {
+    case 'running':
+      return 'bg-blue-100 text-blue-700'
+    case 'completed':
+      return 'bg-green-100 text-green-700'
+    case 'failed':
+      return 'bg-red-100 text-red-700'
+    case 'cancelled':
+    case 'interrupted':
+      return 'bg-amber-100 text-amber-700'
+    default:
+      return 'bg-muted text-muted-foreground'
+  }
 }
 
 export function RMBConsumptionChart() {
@@ -63,9 +141,10 @@ export function RMBConsumptionChart() {
   const [selectedProviders, setSelectedProviders] = useState<number[]>([])
   const [historyDialogOpen, setHistoryDialogOpen] = useState(false)
   const [selectedHistoryProviders, setSelectedHistoryProviders] = useState<number[]>([])
-  const [backfillProgress, setBackfillProgress] = useState<BackfillProgress>(initialBackfillProgress)
+  const [backfillJob, setBackfillJob] = useState<BackfillJob | null>(null)
+  const [creatingBackfillJob, setCreatingBackfillJob] = useState(false)
+  const [cancellingBackfillJob, setCancellingBackfillJob] = useState(false)
   const { toast } = useToast()
-  const stopBackfillRef = useRef(false)
 
   const loadData = useCallback(async () => {
     try {
@@ -75,7 +154,11 @@ export function RMBConsumptionChart() {
       })
       setData(res.data || [])
     } catch (error: any) {
-      toast({ variant: 'destructive', title: '加载失败', description: error.message })
+      toast({
+        variant: 'destructive',
+        title: '加载失败',
+        description: error.response?.data?.error || error.message || '无法加载人民币额度消耗',
+      })
     }
   }, [dateRange.endDate, dateRange.startDate, toast])
 
@@ -92,21 +175,99 @@ export function RMBConsumptionChart() {
     }
   }, [toast])
 
+  const loadActiveBackfillJob = useCallback(async (silent = false) => {
+    try {
+      const res = await getActiveConsumptionBackfillJob()
+      const activeJob = res.data?.job ?? null
+      setBackfillJob(prev => {
+        if (activeJob) return activeJob
+        if (prev && !isActiveBackfillJob(prev.status)) return prev
+        return null
+      })
+      return activeJob
+    } catch (error: any) {
+      if (!silent) {
+        toast({
+          variant: 'destructive',
+          title: '加载回补任务失败',
+          description: error.response?.data?.error || error.message || '无法加载当前回补任务',
+        })
+      }
+      return null
+    }
+  }, [toast])
+
+  const loadBackfillJobByID = useCallback(async (jobID: number, silent = false) => {
+    try {
+      const res = await getConsumptionBackfillJob(jobID)
+      const job = res.data as BackfillJob
+      setBackfillJob(job)
+      return job
+    } catch (error: any) {
+      if (!silent) {
+        toast({
+          variant: 'destructive',
+          title: '加载回补进度失败',
+          description: error.response?.data?.error || error.message || '无法加载回补任务详情',
+        })
+      }
+      return null
+    }
+  }, [toast])
+
   useEffect(() => {
-    loadData()
-    loadProviders()
-  }, [loadData, loadProviders])
+    void loadData()
+    void loadProviders()
+    void loadActiveBackfillJob(true)
+  }, [loadActiveBackfillJob, loadData, loadProviders])
+
+  useEffect(() => {
+    if (!historyDialogOpen) return
+    void loadActiveBackfillJob(true)
+  }, [historyDialogOpen, loadActiveBackfillJob])
+
+  useEffect(() => {
+    if (!historyDialogOpen || !backfillJob || !isActiveBackfillJob(backfillJob.status)) {
+      return
+    }
+
+    const intervalID = window.setInterval(() => {
+      void loadBackfillJobByID(backfillJob.job_id, true).then((job) => {
+        if (job && !isActiveBackfillJob(job.status)) {
+          void loadData()
+        }
+      })
+    }, 3000)
+
+    return () => {
+      window.clearInterval(intervalID)
+    }
+  }, [backfillJob, historyDialogOpen, loadBackfillJobByID, loadData])
+
+  useEffect(() => {
+    if (!historyDialogOpen || isActiveBackfillJob(backfillJob?.status) || selectedHistoryProviders.length > 0) {
+      return
+    }
+
+    const defaultSelection = providers
+      .filter(provider => provider.enabled && provider.query_mode === 'default')
+      .map(provider => provider.id)
+
+    if (defaultSelection.length > 0) {
+      setSelectedHistoryProviders(defaultSelection)
+    }
+  }, [backfillJob?.status, historyDialogOpen, providers, selectedHistoryProviders.length])
 
   const allProviders = useMemo(() => {
     return Array.from(
-      new Map(data.map(h => [h.provider_id, { id: h.provider_id, name: h.provider_name }])).values()
-    ).sort((a, b) => a.name.localeCompare(b.name))
+      new Map(data.map(item => [item.provider_id, { id: item.provider_id, name: item.provider_name }])).values()
+    ).sort((left, right) => left.name.localeCompare(right.name))
   }, [data])
 
   const availableHistoryProviders = useMemo(() => {
     return providers
       .filter(provider => provider.enabled && provider.query_mode === 'default')
-      .sort((a, b) => a.name.localeCompare(b.name))
+      .sort((left, right) => left.name.localeCompare(right.name))
   }, [providers])
 
   const activeProviders = useMemo(() => {
@@ -130,19 +291,20 @@ export function RMBConsumptionChart() {
       dateRange.endDate.slice(0, 4),
       ...data.map(item => item.date.slice(0, 4)),
     ])
-
     return years.size > 1
   }, [data, dateRange.endDate, dateRange.startDate])
 
   const chartData = useMemo(() => {
     const filtered = selectedProviders.length > 0
-      ? data.filter(h => selectedProviders.includes(h.provider_id))
+      ? data.filter(item => selectedProviders.includes(item.provider_id))
       : data
 
     const timeMap = new Map<string, Record<string, number>>()
 
     filtered.forEach(item => {
-      if (!timeMap.has(item.date)) timeMap.set(item.date, {})
+      if (!timeMap.has(item.date)) {
+        timeMap.set(item.date, {})
+      }
       const entry = timeMap.get(item.date)!
       const providerKey = `provider_${item.provider_id}`
       entry[providerKey] = (entry[providerKey] || 0) + item.consumption
@@ -151,78 +313,50 @@ export function RMBConsumptionChart() {
     return Array.from(timeMap.entries())
       .sort(([leftDate], [rightDate]) => leftDate.localeCompare(rightDate))
       .map(([date, values]) => {
-      const total = providerSeries.reduce((sum, provider) => sum + (values[provider.key] || 0), 0)
-      return { date, ...values, __total__: total }
-    })
-  }, [data, selectedProviders, providerSeries])
+        const total = providerSeries.reduce((sum, provider) => sum + (values[provider.key] || 0), 0)
+        return { date, ...values, __total__: total }
+      })
+  }, [data, providerSeries, selectedProviders])
 
   const totalConsumption = useMemo(() => {
     const filtered = selectedProviders.length > 0
-      ? data.filter(h => selectedProviders.includes(h.provider_id))
+      ? data.filter(item => selectedProviders.includes(item.provider_id))
       : data
     return filtered.reduce((sum, item) => sum + item.consumption, 0)
   }, [data, selectedProviders])
 
-  const handleProviderToggle = (id: number) => {
+  const handleProviderToggle = (providerID: number) => {
     setSelectedProviders(prev =>
-      prev.includes(id) ? prev.filter(p => p !== id) : [...prev, id]
+      prev.includes(providerID) ? prev.filter(id => id !== providerID) : [...prev, providerID]
     )
   }
 
   const handleToggleAll = () => {
     setSelectedProviders(prev =>
-      prev.length === allProviders.length ? [] : allProviders.map(p => p.id)
+      prev.length === allProviders.length ? [] : allProviders.map(provider => provider.id)
     )
   }
 
-  const appendBackfillLog = (message: string) => {
-    setBackfillProgress(prev => ({
-      ...prev,
-      logs: [message, ...prev.logs].slice(0, 12),
-    }))
-  }
-
-  const handleHistoryProviderToggle = (id: number) => {
-    if (backfillProgress.status === 'running') return
+  const handleHistoryProviderToggle = (providerID: number) => {
+    if (isActiveBackfillJob(backfillJob?.status)) return
 
     setSelectedHistoryProviders(prev =>
-      prev.includes(id) ? prev.filter(providerId => providerId !== id) : [...prev, id]
+      prev.includes(providerID) ? prev.filter(id => id !== providerID) : [...prev, providerID]
     )
   }
 
   const handleToggleAllHistoryProviders = () => {
-    if (backfillProgress.status === 'running') return
+    if (isActiveBackfillJob(backfillJob?.status)) return
 
     setSelectedHistoryProviders(prev =>
-      prev.length === availableHistoryProviders.length ? [] : availableHistoryProviders.map(provider => provider.id)
+      prev.length === availableHistoryProviders.length
+        ? []
+        : availableHistoryProviders.map(provider => provider.id)
     )
   }
 
-  const resetBackfillProgress = () => {
-    setBackfillProgress(initialBackfillProgress)
-    stopBackfillRef.current = false
-  }
-
   const handleDialogOpenChange = (open: boolean) => {
-    if (backfillProgress.status === 'running') {
-      setHistoryDialogOpen(true)
-      return
-    }
-
     setHistoryDialogOpen(open)
-    if (open && selectedHistoryProviders.length === 0) {
-      setSelectedHistoryProviders(availableHistoryProviders.map(provider => provider.id))
-    }
-    if (!open) {
-      resetBackfillProgress()
-    }
-  }
-
-  const formatBackfillDate = (date: Date) => {
-    const year = date.getFullYear()
-    const month = `${date.getMonth() + 1}`.padStart(2, '0')
-    const day = `${date.getDate()}`.padStart(2, '0')
-    return `${year}-${month}-${day}`
   }
 
   const handleStartBackfill = async () => {
@@ -235,102 +369,58 @@ export function RMBConsumptionChart() {
       return
     }
 
-    const providersToBackfill = availableHistoryProviders.filter(provider => selectedHistoryProviders.includes(provider.id))
-    if (providersToBackfill.length === 0) {
-      toast({
-        variant: 'destructive',
-        title: '无可用供应商',
-        description: '当前没有可回补历史数据的默认模式供应商',
+    setCreatingBackfillJob(true)
+    try {
+      const res = await createConsumptionBackfillJob({
+        provider_ids: selectedHistoryProviders,
       })
-      return
-    }
-
-    stopBackfillRef.current = false
-    setBackfillProgress({
-      ...initialBackfillProgress,
-      status: 'running',
-    })
-    const today = new Date()
-    today.setHours(0, 0, 0, 0)
-
-    for (const provider of providersToBackfill) {
-      let providerFailed = false
-
-      for (let offset = 0; offset < MAX_BACKFILL_DAYS; offset += 1) {
-        if (stopBackfillRef.current) {
-          setBackfillProgress(prev => ({
-            ...prev,
-            status: 'stopped',
-            logs: [
-              prev.currentProviderName
-                ? `已手动停止，停在 ${prev.currentProviderName} ${prev.currentDate}`
-                : '已手动停止',
-              ...prev.logs,
-            ].slice(0, 12),
-          }))
-          await loadData()
-          toast({ title: '已停止', description: '历史回补已按要求停止' })
-          return
-        }
-
-        const currentDate = new Date(today)
-        currentDate.setDate(currentDate.getDate() - offset)
-        const date = formatBackfillDate(currentDate)
-
-        setBackfillProgress(prev => ({
-          ...prev,
-          currentProviderName: provider.name,
-          currentDate: date,
-        }))
-
-        try {
-          const res = await backfillBalanceConsumptionHistoryDay({
-            provider_id: provider.id,
-            date,
-          })
-
-          const status = res.data?.status === 'inserted' ? 'inserted' : 'skipped'
-          const quotaConsumed = res.data?.quota_consumed ?? 0
-
-          setBackfillProgress(prev => ({
-            ...prev,
-            inserted: prev.inserted + (status === 'inserted' ? 1 : 0),
-            skipped: prev.skipped + (status === 'skipped' ? 1 : 0),
-          }))
-
-          appendBackfillLog(
-            `${provider.name} ${date} ${status === 'inserted' ? '已写入' : '已跳过'} · quota ${quotaConsumed}`
-          )
-        } catch (error: any) {
-          const message = error.response?.data?.error || error.message || '获取失败'
-          providerFailed = true
-          setBackfillProgress(prev => ({
-            ...prev,
-            failed: prev.failed + 1,
-          }))
-          appendBackfillLog(`${provider.name} ${date} 失败 · ${message}`)
-          break
-        }
+      const job = (res.data?.job ?? null) as BackfillJob | null
+      setBackfillJob(job)
+      toast({
+        title: '回补任务已创建',
+        description: `已提交 ${selectedHistoryProviders.length} 个供应商的后台回补任务`,
+      })
+    } catch (error: any) {
+      if (error.response?.status === 409) {
+        const job = (error.response?.data?.job ?? null) as BackfillJob | null
+        setBackfillJob(job)
+        toast({
+          variant: 'destructive',
+          title: '已有任务在运行',
+          description: '当前只允许同时运行一个历史回补任务，请等待现有任务结束',
+        })
+      } else {
+        toast({
+          variant: 'destructive',
+          title: '创建任务失败',
+          description: error.response?.data?.error || error.message || '无法创建历史回补任务',
+        })
       }
-
-      if (providerFailed) {
-        continue
-      }
+    } finally {
+      setCreatingBackfillJob(false)
     }
-
-    setBackfillProgress(prev => ({
-      ...prev,
-      status: 'completed',
-    }))
-    await loadData()
-    toast({
-      title: '历史回补完成',
-      description: `已完成 ${providersToBackfill.length} 个供应商的历史回补检查`,
-    })
   }
 
-  const handleStopBackfill = () => {
-    stopBackfillRef.current = true
+  const handleCancelBackfill = async () => {
+    if (!backfillJob) return
+
+    setCancellingBackfillJob(true)
+    try {
+      await cancelConsumptionBackfillJob(backfillJob.job_id)
+      toast({
+        title: '停止请求已提交',
+        description: '任务会在当前正在执行的日期完成后停止',
+      })
+      await loadBackfillJobByID(backfillJob.job_id, true)
+    } catch (error: any) {
+      toast({
+        variant: 'destructive',
+        title: '停止任务失败',
+        description: error.response?.data?.error || error.message || '无法停止回补任务',
+      })
+    } finally {
+      setCancellingBackfillJob(false)
+    }
   }
 
   const CustomTooltip = ({ active, payload, label }: any) => {
@@ -338,7 +428,7 @@ export function RMBConsumptionChart() {
 
     const visibleItems = payload
       .filter((entry: any) => typeof entry.value === 'number' && entry.value > 0)
-      .sort((a: any, b: any) => b.value - a.value)
+      .sort((left: any, right: any) => right.value - left.value)
 
     const total = visibleItems.reduce((sum: number, entry: any) => sum + entry.value, 0)
 
@@ -360,6 +450,10 @@ export function RMBConsumptionChart() {
       </div>
     )
   }
+
+  const activeJobRunning = isActiveBackfillJob(backfillJob?.status)
+  const historyButtonDisabled = availableHistoryProviders.length === 0 && !backfillJob
+  const historyButtonLabel = activeJobRunning ? '查看回补进度' : '获取历史数据'
 
   return (
     <Card>
@@ -383,10 +477,10 @@ export function RMBConsumptionChart() {
               <Button
                 variant="outline"
                 onClick={() => handleDialogOpenChange(true)}
-                disabled={availableHistoryProviders.length === 0}
+                disabled={historyButtonDisabled}
               >
                 <Database className="mr-2 h-4 w-4" />
-                获取历史数据
+                {historyButtonLabel}
               </Button>
               <div className="flex gap-1 bg-muted rounded-lg p-1">
                 <Button
@@ -447,7 +541,7 @@ export function RMBConsumptionChart() {
                   tickFormatter={(value) => formatChartDate(String(value), showYearOnAxis)}
                   minTickGap={24}
                 />
-                <YAxis tickFormatter={(v) => `¥${v.toFixed(0)}`} />
+                <YAxis tickFormatter={(value) => `¥${value.toFixed(0)}`} />
                 <Tooltip content={<CustomTooltip />} />
                 <Legend />
                 {providerSeries.map((provider, index) => (
@@ -469,7 +563,7 @@ export function RMBConsumptionChart() {
                   tickFormatter={(value) => formatChartDate(String(value), showYearOnAxis)}
                   minTickGap={24}
                 />
-                <YAxis tickFormatter={(v) => `¥${v.toFixed(0)}`} />
+                <YAxis tickFormatter={(value) => `¥${value.toFixed(0)}`} />
                 <Tooltip content={<CustomTooltip />} />
                 <Legend />
                 {providerSeries.map((provider) => (
@@ -495,15 +589,15 @@ export function RMBConsumptionChart() {
       </CardContent>
 
       <Dialog open={historyDialogOpen} onOpenChange={handleDialogOpenChange}>
-        <DialogContent className="sm:max-w-2xl">
+        <DialogContent className="sm:max-w-3xl">
           <DialogHeader>
             <DialogTitle>获取历史数据</DialogTitle>
             <DialogDescription>
-              先选择默认模式供应商，再逐个逐天向前回补最近 {MAX_BACKFILL_DAYS} 天。系统会自动跳过已记录的日期。
+              回补任务会在后端后台运行。不同供应商并行处理，单个供应商按天串行向前回补最近 365 天，前端关闭后仍会继续。
             </DialogDescription>
           </DialogHeader>
 
-          <div className="space-y-4">
+          <div className="space-y-5">
             <div className="flex items-center justify-between">
               <div className="text-sm text-muted-foreground">
                 仅展示启用中的默认模式供应商
@@ -512,7 +606,7 @@ export function RMBConsumptionChart() {
                 variant="outline"
                 size="sm"
                 onClick={handleToggleAllHistoryProviders}
-                disabled={availableHistoryProviders.length === 0 || backfillProgress.status === 'running'}
+                disabled={activeJobRunning || availableHistoryProviders.length === 0}
               >
                 {selectedHistoryProviders.length === availableHistoryProviders.length ? '取消全选' : '全选'}
               </Button>
@@ -524,12 +618,12 @@ export function RMBConsumptionChart() {
                   <button
                     key={provider.id}
                     onClick={() => handleHistoryProviderToggle(provider.id)}
-                    disabled={backfillProgress.status === 'running'}
+                    disabled={activeJobRunning}
                     className={`px-3 py-1.5 text-sm rounded-md border transition-colors ${
                       selectedHistoryProviders.includes(provider.id)
                         ? 'bg-primary text-primary-foreground border-primary'
                         : 'bg-background hover:bg-accent border-border'
-                    } ${backfillProgress.status === 'running' ? 'cursor-not-allowed opacity-70' : ''}`}
+                    } ${activeJobRunning ? 'cursor-not-allowed opacity-70' : ''}`}
                   >
                     {provider.name}
                   </button>
@@ -541,77 +635,108 @@ export function RMBConsumptionChart() {
               </div>
             )}
 
-            <div className="grid gap-3 md:grid-cols-3">
-              <div className="rounded-lg border p-3">
-                <div className="text-sm text-muted-foreground">已写入</div>
-                <div className="text-2xl font-bold">{backfillProgress.inserted}</div>
-              </div>
-              <div className="rounded-lg border p-3">
-                <div className="text-sm text-muted-foreground">已跳过</div>
-                <div className="text-2xl font-bold">{backfillProgress.skipped}</div>
-              </div>
-              <div className="rounded-lg border p-3">
-                <div className="text-sm text-muted-foreground">失败供应商</div>
-                <div className="text-2xl font-bold">{backfillProgress.failed}</div>
-              </div>
-            </div>
-
-            <div className="rounded-lg border p-4 space-y-2">
-              <div className="flex items-center justify-between">
-                <div>
-                  <div className="font-medium">当前进度</div>
+            {backfillJob && (
+              <div className="rounded-lg border p-4 space-y-4">
+                <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                  <div>
+                    <div className="font-medium">当前任务</div>
+                    <div className="text-sm text-muted-foreground">
+                      任务 #{backfillJob.job_id} · {getJobStatusLabel(backfillJob.status)} · 共 {backfillJob.total_providers} 个供应商
+                    </div>
+                  </div>
                   <div className="text-sm text-muted-foreground">
-                    {backfillProgress.currentProviderName
-                      ? `${backfillProgress.currentProviderName} · ${backfillProgress.currentDate || '等待开始'}`
-                      : '尚未开始'}
+                    {activeJobRunning && (
+                      <span className="inline-flex items-center gap-2">
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                        后台运行中
+                      </span>
+                    )}
+                    {!activeJobRunning && backfillJob.finished_at && `结束于 ${formatLongDate(backfillJob.finished_at.slice(0, 10))}`}
                   </div>
                 </div>
-                <div className="text-sm text-muted-foreground">
-                  {backfillProgress.status === 'running' && (
-                    <span className="inline-flex items-center gap-2">
-                      <Loader2 className="h-4 w-4 animate-spin" />
-                      运行中
-                    </span>
-                  )}
-                  {backfillProgress.status === 'completed' && '已完成'}
-                  {backfillProgress.status === 'stopped' && '已停止'}
-                </div>
-              </div>
 
-              <div className="max-h-48 overflow-y-auto rounded-md bg-muted/40 p-3 text-sm">
-                {backfillProgress.logs.length > 0 ? (
-                  <div className="space-y-2">
-                    {backfillProgress.logs.map((log, index) => (
-                      <div key={`${log}-${index}`} className="font-mono text-xs leading-5">
-                        {log}
+                <div className="grid gap-3 md:grid-cols-4">
+                  <div className="rounded-lg border p-3">
+                    <div className="text-sm text-muted-foreground">已写入天数</div>
+                    <div className="text-2xl font-bold">{backfillJob.inserted_days}</div>
+                  </div>
+                  <div className="rounded-lg border p-3">
+                    <div className="text-sm text-muted-foreground">已跳过天数</div>
+                    <div className="text-2xl font-bold">{backfillJob.skipped_days}</div>
+                  </div>
+                  <div className="rounded-lg border p-3">
+                    <div className="text-sm text-muted-foreground">已完成供应商</div>
+                    <div className="text-2xl font-bold">{backfillJob.completed_providers}/{backfillJob.total_providers}</div>
+                  </div>
+                  <div className="rounded-lg border p-3">
+                    <div className="text-sm text-muted-foreground">异常供应商</div>
+                    <div className="text-2xl font-bold">
+                      {backfillJob.failed_providers + backfillJob.cancelled_providers + backfillJob.interrupted_providers}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="rounded-md bg-muted/40 p-3 text-sm text-muted-foreground">
+                  运行中 {backfillJob.running_providers} 个，等待中 {backfillJob.pending_providers} 个，失败 {backfillJob.failed_providers} 个，已取消 {backfillJob.cancelled_providers} 个，中断 {backfillJob.interrupted_providers} 个。
+                </div>
+
+                <div className="space-y-2">
+                  <div className="text-sm font-medium">供应商进度</div>
+                  <div className="max-h-64 overflow-y-auto space-y-2">
+                    {backfillJob.providers.map((provider) => (
+                      <div key={provider.provider_id} className="rounded-lg border p-3">
+                        <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+                          <div>
+                            <div className="font-medium">{provider.provider_name}</div>
+                            <div className="text-sm text-muted-foreground">
+                              当前日期 {provider.current_date || '尚未开始'} · 已写入 {provider.inserted_days} 天 · 已跳过 {provider.skipped_days} 天
+                            </div>
+                            {provider.error_message && (
+                              <div className="text-sm text-red-600 mt-1">{provider.error_message}</div>
+                            )}
+                          </div>
+                          <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-medium ${getProviderStatusClassName(provider.status)}`}>
+                            {getProviderStatusLabel(provider.status)}
+                          </span>
+                        </div>
                       </div>
                     ))}
+                    {backfillJob.providers.length === 0 && (
+                      <div className="text-sm text-muted-foreground">暂无供应商进度数据</div>
+                    )}
                   </div>
-                ) : (
-                  <div className="text-muted-foreground">
-                    开始后会在这里显示最近的回补记录。
-                  </div>
-                )}
+                </div>
               </div>
-            </div>
+            )}
           </div>
 
           <DialogFooter className="gap-2">
-            <Button
-              variant="outline"
-              onClick={() => handleDialogOpenChange(false)}
-              disabled={backfillProgress.status === 'running'}
-            >
+            <Button variant="outline" onClick={() => handleDialogOpenChange(false)}>
               关闭
             </Button>
-            {backfillProgress.status === 'running' ? (
-              <Button variant="destructive" onClick={handleStopBackfill}>
-                <StopCircle className="mr-2 h-4 w-4" />
-                停止
+            {activeJobRunning ? (
+              <Button
+                variant="destructive"
+                onClick={handleCancelBackfill}
+                disabled={cancellingBackfillJob || backfillJob?.status === 'cancelling'}
+              >
+                {cancellingBackfillJob || backfillJob?.status === 'cancelling' ? (
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                ) : (
+                  <StopCircle className="mr-2 h-4 w-4" />
+                )}
+                停止任务
               </Button>
             ) : (
-              <Button onClick={handleStartBackfill} disabled={availableHistoryProviders.length === 0}>
-                <Database className="mr-2 h-4 w-4" />
+              <Button
+                onClick={handleStartBackfill}
+                disabled={creatingBackfillJob || availableHistoryProviders.length === 0 || selectedHistoryProviders.length === 0}
+              >
+                {creatingBackfillJob ? (
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                ) : (
+                  <Database className="mr-2 h-4 w-4" />
+                )}
                 开始回补
               </Button>
             )}

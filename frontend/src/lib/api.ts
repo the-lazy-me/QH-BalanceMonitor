@@ -106,6 +106,15 @@ export const getBalanceConsumptionRMB = (params?: {
   if (params?.endDate) queryParams.end_date = params.endDate
   return api.get('/balance/consumption/rmb', { params: queryParams })
 }
+export const createConsumptionBackfillJob = (data: {
+  provider_ids: number[]
+}) => api.post('/balance/consumption/history/jobs', data)
+export const getActiveConsumptionBackfillJob = () =>
+  api.get('/balance/consumption/history/jobs/active')
+export const getConsumptionBackfillJob = (id: number) =>
+  api.get(`/balance/consumption/history/jobs/${id}`)
+export const cancelConsumptionBackfillJob = (id: number) =>
+  api.post(`/balance/consumption/history/jobs/${id}/cancel`)
 export const backfillBalanceConsumptionHistoryDay = (data: {
   provider_id: number
   date: string

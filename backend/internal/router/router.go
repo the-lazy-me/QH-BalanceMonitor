@@ -65,6 +65,10 @@ func Setup(db *sql.DB) *gin.Engine {
 			protected.GET("/balance/history", getBalanceHistory(db))
 			protected.GET("/balance/history/rmb", getBalanceHistoryRMB(db))
 			protected.GET("/balance/consumption/rmb", getBalanceConsumptionRMB(db))
+			protected.POST("/balance/consumption/history/jobs", createConsumptionBackfillJob(db))
+			protected.GET("/balance/consumption/history/jobs/active", getActiveConsumptionBackfillJob(db))
+			protected.GET("/balance/consumption/history/jobs/:id", getConsumptionBackfillJob(db))
+			protected.POST("/balance/consumption/history/jobs/:id/cancel", cancelConsumptionBackfillJob(db))
 			protected.POST("/balance/consumption/history/backfill-day", backfillBalanceConsumptionHistoryDay(db))
 			protected.POST("/balance/check", manualCheckBalance(db))
 
@@ -737,6 +741,111 @@ func backfillBalanceConsumptionHistoryDay(db *sql.DB) gin.HandlerFunc {
 		}
 
 		c.JSON(http.StatusOK, result)
+	}
+}
+
+func createConsumptionBackfillJob(db *sql.DB) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var req struct {
+			ProviderIDs []int `json:"provider_ids" binding:"required"`
+		}
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "provider_ids 不能为空"})
+			return
+		}
+
+		userIDValue, exists := c.Get("user_id")
+		if !exists {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "未授权"})
+			return
+		}
+
+		job, created, err := services.CreateConsumptionBackfillJob(db, userIDValue.(int), req.ProviderIDs, services.DefaultConsumptionBackfillDaysLimit)
+		if err != nil {
+			statusCode := http.StatusInternalServerError
+			switch {
+			case strings.Contains(err.Error(), "至少选择一个供应商"),
+				strings.Contains(err.Error(), "供应商不存在"),
+				strings.Contains(err.Error(), "供应商未启用"),
+				strings.Contains(err.Error(), "仅支持默认模式供应商"):
+				statusCode = http.StatusBadRequest
+			}
+			c.JSON(statusCode, gin.H{"error": err.Error()})
+			return
+		}
+
+		if !created {
+			c.JSON(http.StatusConflict, gin.H{
+				"job_id": job.JobID,
+				"status": job.Status,
+				"job":    job,
+			})
+			return
+		}
+
+		c.JSON(http.StatusCreated, gin.H{
+			"job_id": job.JobID,
+			"status": job.Status,
+			"job":    job,
+		})
+	}
+}
+
+func getActiveConsumptionBackfillJob(db *sql.DB) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		job, err := services.GetActiveConsumptionBackfillJob(db)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+
+		c.JSON(http.StatusOK, gin.H{"job": job})
+	}
+}
+
+func getConsumptionBackfillJob(db *sql.DB) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		jobID, err := strconv.Atoi(c.Param("id"))
+		if err != nil || jobID <= 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "无效的任务 ID"})
+			return
+		}
+
+		job, err := services.GetConsumptionBackfillJob(db, jobID)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		if job == nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": "回补任务不存在"})
+			return
+		}
+
+		c.JSON(http.StatusOK, job)
+	}
+}
+
+func cancelConsumptionBackfillJob(db *sql.DB) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		jobID, err := strconv.Atoi(c.Param("id"))
+		if err != nil || jobID <= 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "无效的任务 ID"})
+			return
+		}
+
+		if err := services.RequestCancelConsumptionBackfillJob(db, jobID); err != nil {
+			statusCode := http.StatusInternalServerError
+			switch {
+			case strings.Contains(err.Error(), "不存在"):
+				statusCode = http.StatusNotFound
+			case strings.Contains(err.Error(), "无法取消"):
+				statusCode = http.StatusBadRequest
+			}
+			c.JSON(statusCode, gin.H{"error": err.Error()})
+			return
+		}
+
+		c.JSON(http.StatusOK, gin.H{"message": "取消请求已提交"})
 	}
 }
 
